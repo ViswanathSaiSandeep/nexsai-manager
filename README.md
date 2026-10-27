@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# NEXSAI Manager — Social Media MCP Server
 
-## Getting Started
+Production-ready Model Context Protocol (MCP) server built with **Next.js 16.4.3**, **TypeScript**, **`mcp-handler`**, and **Zod** for managing the **@nexsaicommunity** Instagram account via Claude.
 
-First, run the development server:
+## Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```text
+app/
+└── api/
+    └── mcp/
+        └── route.ts          # Clean MCP HTTP handler (GET / POST / DELETE) + optional MCP_API_KEY auth
+
+lib/
+├── instagram.ts              # Barrel export for backwards compatibility
+├── instagram/
+│   ├── client.ts             # Graph API v24.0 client, timing, token redaction & error classification
+│   ├── profile.ts            # Instagram profile retrieval
+│   ├── media.ts              # Media listing & media details retrieval
+│   ├── publishing.ts         # 2-step container + publish flow with confirm=true safety & duplicate guard
+│   ├── comments.ts           # Comment listing, replies, hiding, and deletion with confirm=true safety
+│   ├── insights.ts           # Media & account insights (v24.0 metrics) + content performance analyzer
+│   └── types.ts              # TypeScript interfaces
+│
+├── mcp/
+│   ├── tools.ts              # MCP tool registrations & descriptions
+│   └── validation.ts         # Zod input validation schemas
+│
+└── utils/
+    ├── errors.ts             # Safe error categorization (never exposes tokens or stack traces)
+    ├── logger.ts             # Structured server-side logger with automatic secret redaction
+    ├── media-storage.ts      # MediaStorageProvider abstraction & HTTPS URL validation
+    └── rate-limit.ts         # In-memory duplicate publish & rate-limit protection
+
+scripts/
+├── test-mcp.mts              # Automated MCP verification & safety test suite
+├── ts-loader.mjs             # Node ESM path resolver for test execution
+└── ts-register.mjs           # Node loader registration helper
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Environment Variables
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Copy `.env.example` to `.env.local` for local development:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```env
+INSTAGRAM_ACCESS_TOKEN=your_instagram_access_token
+# Optional (recommended for Vercel production):
+# MCP_API_KEY=your_random_secret_key
+```
 
-## Learn More
+## Running & Testing Locally
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+# Run automated MCP verification suite (protocol, live read tools, preview safety, error cases)
+npm run test:mcp
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Start development server
+npm run dev
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Production build check
+npm run build
+```
