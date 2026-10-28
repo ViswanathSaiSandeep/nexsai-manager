@@ -71,6 +71,20 @@ export const instagramPublishInputSchema = z.object({
     .describe(
       "Safety confirmation flag. Set to false (default) to generate a safe preview without publishing. Set to true ONLY after the user explicitly confirms they want to publish the post live."
     ),
+  force_duplicate: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Optional override if a historical duplicate post was detected and the user explicitly confirmed they want to re-publish anyway."
+    ),
+  plan_id: z
+    .string()
+    .trim()
+    .optional()
+    .describe(
+      "Optional content plan ID from `nexsai_create_content` to mark as PUBLISHED once live."
+    ),
 });
 
 export const instagramCommentsInputSchema = z.object({
@@ -200,5 +214,272 @@ export const instagramAnalyzeContentInputSchema = z.object({
     .describe(
       "Number of recent Instagram posts to fetch and analyze with insights (1 to 25, defaults to 10)."
     ),
+});
+
+export const contentPillarEnumSchema = z.enum([
+  "ai_tools_productivity",
+  "tech_explained",
+  "ai_news_breakthroughs",
+  "developer_workflows",
+  "gadgets_hardware",
+]);
+
+export const nexsaiResearchInputSchema = z.object({
+  topic: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .optional()
+    .default("AI tools LLM models developer tech")
+    .describe(
+      "Topic or keywords to research across tech & AI sources (e.g., 'Claude MCP', 'Android 16 AI', 'open source LLM')."
+    ),
+  time_range: z
+    .enum(["24h", "7d", "30d"])
+    .optional()
+    .default("7d")
+    .describe("Freshness window for discovered stories ('24h', '7d', or '30d')."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(15)
+    .optional()
+    .default(6)
+    .describe("Maximum number of scored opportunities to return (1 to 15)."),
+});
+
+export const nexsaiFindOpportunitiesInputSchema = z.object({
+  focus_topic: z
+    .string()
+    .trim()
+    .optional()
+    .describe(
+      "Optional topic focus to combine with historical performance and content pillar gaps."
+    ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .optional()
+    .default(5)
+    .describe("Number of ranked content opportunities to return (1 to 10, default 5)."),
+});
+
+export const nexsaiCompetitorAnalysisInputSchema = z.object({
+  focus_category: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional competitor category filter (e.g., 'AI News', 'Hardware')."),
+  add_or_update_competitor: z
+    .object({
+      handle: z.string().trim().min(2),
+      name: z.string().trim().min(2),
+      category: z.string().trim().min(2),
+      typical_formats: z.array(z.string().trim()),
+      core_topics: z.array(z.string().trim()),
+      strengths: z.array(z.string().trim()),
+      differentiation_gap_for_nexsai: z.string().trim().min(5),
+    })
+    .optional()
+    .describe(
+      "Optional competitor profile to add or update in NEXSAI persistent memory."
+    ),
+});
+
+export const nexsaiStrategyInputSchema = z.object({
+  goal: z
+    .enum(["reach", "saves", "engagement", "followers", "balanced"])
+    .optional()
+    .default("balanced")
+    .describe(
+      "Primary strategic objective for this week ('reach', 'saves', 'engagement', 'followers', or 'balanced')."
+    ),
+});
+
+export const nexsaiPlanWeekInputSchema = z.object({
+  focus_theme: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional weekly theme or focus topic."),
+  save_as_drafts: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe(
+      "When true (default), saves the 7 planned days as DRAFT items in the NEXSAI content calendar."
+    ),
+});
+
+export const nexsaiCreateContentInputSchema = z.object({
+  plan_id: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional existing content plan ID to update."),
+  topic: z
+    .string()
+    .trim()
+    .min(2)
+    .max(300)
+    .describe("Topic or title of the post."),
+  content_pillar: contentPillarEnumSchema
+    .optional()
+    .default("ai_tools_productivity")
+    .describe("Target NEXSAI content pillar."),
+  format: z
+    .enum(["IMAGE", "CAROUSEL_ALBUM", "REELS"])
+    .optional()
+    .default("CAROUSEL_ALBUM")
+    .describe("Post format ('CAROUSEL_ALBUM', 'IMAGE', or 'REELS')."),
+  goal: z
+    .enum(["reach", "saves", "engagement", "followers", "education"])
+    .optional()
+    .default("saves")
+    .describe("Primary goal for this content piece."),
+  hook: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Scroll-stopping opening hook line."),
+  headline: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Visual slide 1 headline."),
+  caption: z
+    .string()
+    .max(2200)
+    .optional()
+    .describe("Full draft caption (max 2,200 characters)."),
+  cta: z.string().trim().optional().describe("Call-to-action line."),
+  hashtags: z
+    .array(z.string().trim())
+    .optional()
+    .describe("List of hashtags (recommended 5–8 tags)."),
+  visual_brief: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Visual concept & design direction."),
+  carousel_slides: z
+    .array(z.string().trim())
+    .optional()
+    .describe("Slide-by-slide outline for carousel posts."),
+  image_url: z
+    .string()
+    .trim()
+    .url()
+    .optional()
+    .describe("Optional publicly accessible HTTPS image URL when ready."),
+  scheduled_time: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional ISO-8601 target publish time."),
+  status: z
+    .enum(["DRAFT", "REVIEW", "APPROVED", "SCHEDULED", "PUBLISHED", "ANALYZING", "ARCHIVED"])
+    .optional()
+    .default("DRAFT")
+    .describe(
+      "Approval workflow state: DRAFT -> REVIEW -> APPROVED -> SCHEDULED -> PUBLISHED -> ANALYZING."
+    ),
+});
+
+export const nexsaiAnalyzePostInputSchema = z.object({
+  media_id: instagramIdSchema.describe(
+    "Numeric Instagram Media ID to benchmark against account, format, and pillar averages."
+  ),
+});
+
+export const nexsaiCreateExperimentInputSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(3)
+    .max(150)
+    .describe("Experiment name (e.g., 'Numbered Hook vs Curiosity Question Hook')."),
+  variable: z
+    .enum([
+      "hook_style",
+      "format",
+      "pillar",
+      "cta_variation",
+      "posting_time",
+      "caption_length",
+      "topic_angle",
+    ])
+    .describe("Single variable being tested."),
+  hypothesis: z
+    .string()
+    .trim()
+    .min(5)
+    .describe("Clear testable hypothesis."),
+  variant_a: z.string().trim().min(2).describe("Description of Variant A (baseline)."),
+  variant_b: z.string().trim().min(2).describe("Description of Variant B (challenger)."),
+  success_metric: z
+    .enum(["engagement_rate_pct", "save_rate_pct", "share_rate_pct", "reach", "views"])
+    .optional()
+    .default("engagement_rate_pct")
+    .describe("Primary metric used to evaluate the experiment."),
+  variant_a_media_ids: z
+    .array(instagramIdSchema)
+    .optional()
+    .describe("Optional list of Instagram Media IDs assigned to Variant A."),
+  variant_b_media_ids: z
+    .array(instagramIdSchema)
+    .optional()
+    .describe("Optional list of Instagram Media IDs assigned to Variant B."),
+});
+
+export const nexsaiAnalyzeExperimentInputSchema = z.object({
+  experiment_id: z
+    .string()
+    .trim()
+    .optional()
+    .describe(
+      "Experiment ID to evaluate (omit to evaluate the most recent active experiment)."
+    ),
+  variant_a_media_ids: z
+    .array(instagramIdSchema)
+    .optional()
+    .describe("Optional override of Media IDs for Variant A."),
+  variant_b_media_ids: z
+    .array(instagramIdSchema)
+    .optional()
+    .describe("Optional override of Media IDs for Variant B."),
+});
+
+export const nexsaiRecommendInputSchema = z.object({
+  goal: z
+    .enum(["reach", "saves", "engagement", "followers", "balanced"])
+    .optional()
+    .default("balanced")
+    .describe("Optional strategic goal to weight the recommendation engine."),
+});
+
+export const nexsaiBrandConfigInputSchema = z.object({
+  action: z
+    .enum(["get", "update"])
+    .optional()
+    .default("get")
+    .describe("Use 'get' to read current brand memory or 'update' to modify fields."),
+  positioning: z.string().trim().optional(),
+  mission: z.string().trim().optional(),
+  target_audience: z.array(z.string().trim()).optional(),
+  cta_preferences: z.array(z.string().trim()).optional(),
+  default_hashtags: z.array(z.string().trim()).optional(),
+  signature_series: z.array(z.string().trim()).optional(),
+  topics_to_avoid: z.array(z.string().trim()).optional(),
+  posts_per_week: z.number().int().min(1).max(21).optional(),
+  confirm: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Required (confirm=true) when action='update' to persist brand memory changes."),
 });
 

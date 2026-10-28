@@ -37,6 +37,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# nexsai local v2 store
+/.nexsai-data/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

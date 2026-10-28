@@ -1,16 +1,20 @@
 import { timingSafeEqual } from "crypto";
 import { createMcpHandler } from "mcp-handler";
 import { registerNexsaiTools } from "../../../lib/mcp/tools";
+import { registerNexsaiResources } from "../../../lib/mcp/resources";
+import { registerNexsaiPrompts } from "../../../lib/mcp/prompts";
 import { logMcpOperation } from "../../../lib/utils/logger";
 
 const mcpHandler = createMcpHandler(
   (server) => {
     registerNexsaiTools(server);
+    registerNexsaiResources(server);
+    registerNexsaiPrompts(server);
   },
   {
     serverInfo: {
       name: "nexsai-manager",
-      version: "1.0.0",
+      version: "2.0.0",
     },
   }
 );

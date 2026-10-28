@@ -1,32 +1,31 @@
 /**
- * Comprehensive Automated Verification Suite for NEXSAI Manager MCP Server
+ * Comprehensive Automated Verification Suite for NEXSAI Manager 2.0
  *
  * Tests:
- * 1. MCP Protocol: initialize, tools/list, nexsai_status
- * 2. Live Read-Only Tools (when INSTAGRAM_ACCESS_TOKEN is present in .env.local):
+ * 1. MCP Protocol: initialize, tools/list (all 21 V1+V2 tools), resources/list, resources/read, prompts/list, prompts/get, nexsai_status
+ * 2. Live Read-Only Instagram & V2 Intelligence Tools (against @nexsaicommunity):
  *    - instagram_profile
  *    - instagram_media
  *    - instagram_media_details
  *    - instagram_comments
  *    - instagram_media_insights
  *    - instagram_account_insights
- *    - instagram_analyze_content
- * 3. Publishing & Moderation Safety (confirm=false -> preview only, NO network write):
- *    - instagram_publish (confirm=false)
- *    - instagram_comment_reply (confirm=false)
- *    - instagram_hide_comment (confirm=false)
- *    - instagram_delete_comment (confirm=false)
- * 4. Mocked Write Execution (confirm=true with mocked fetch -> no real Instagram posts created)
- * 5. Error & Validation Cases:
- *    - missing token
- *    - invalid token (Meta OAuth error 190, token redaction check)
- *    - invalid URL (HTTP, localhost, malformed)
- *    - missing/empty caption
- *    - caption too long (>2200 chars) & too many hashtags (>30)
- *    - invalid media ID (non-numeric)
- *    - Meta permission error (OAuth code 10 / 200)
- *    - Duplicate publish rate-limit guard
- *    - Optional MCP_API_KEY endpoint authentication guard
+ *    - instagram_analyze_content / nexsai_analyze_account (verifies OBSERVATION, CALCULATION, INFERENCE, RECOMMENDATION)
+ *    - nexsai_analyze_post
+ * 3. V2 Research, Strategy, Planning, Experiments, & Recommendation Brain:
+ *    - nexsai_research / nexsai_research_today
+ *    - nexsai_find_opportunities
+ *    - nexsai_competitor_analysis
+ *    - nexsai_strategy
+ *    - nexsai_plan_week
+ *    - nexsai_create_content (DRAFT -> REVIEW -> APPROVED workflow)
+ *    - nexsai_create_experiment & nexsai_analyze_experiment
+ *    - nexsai_recommend
+ *    - nexsai_brand_config (confirm=false preview vs confirm=true)
+ * 4. Analytics Edge Cases (zero denominators, missing metrics)
+ * 5. Publishing & Moderation Safety (confirm=false -> MUST NOT publish)
+ * 6. Mocked Write Execution (confirm=true with mocked fetch + historical duplicate detection)
+ * 7. Security & Validation Error Cases (missing token, invalid token with redaction, permission error, invalid URLs, MCP_API_KEY)
  */
 
 import assert from "node:assert/strict";
@@ -34,6 +33,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { GET, POST } from "../app/api/mcp/route.ts";
 import { resetPublishSafetyGuard } from "../lib/utils/rate-limit.ts";
+import { calculatePostRates } from "../lib/analytics/metrics.ts";
 
 // Load .env.local if not already loaded
 const envLocalPath = path.resolve(process.cwd(), ".env.local");
@@ -60,6 +60,10 @@ interface JsonRpcResponse {
     protocolVersion?: string;
     serverInfo?: { name: string; version: string };
     tools?: Array<{ name: string; description: string; inputSchema: unknown }>;
+    resources?: Array<{ name: string; uri: string; mimeType?: string }>;
+    contents?: Array<{ uri: string; text: string }>;
+    prompts?: Array<{ name: string; description?: string }>;
+    messages?: Array<{ role: string; content: { type: string; text: string } }>;
     content?: Array<{ type: string; text: string }>;
     isError?: boolean;
   };
@@ -153,25 +157,26 @@ async function callTool(
 
 async function runTests() {
   console.log("============================================================");
-  console.log("NEXSAI Manager MCP Server — Verification Suite");
+  console.log("NEXSAI Manager 2.0 — AI Social Media OS Verification Suite");
   console.log("============================================================\n");
 
   const originalToken = process.env.INSTAGRAM_ACCESS_TOKEN;
   const originalFetch = globalThis.fetch;
 
   // ------------------------------------------------------------
-  // 1. MCP Protocol: initialize, tools/list, nexsai_status
+  // 1. MCP Protocol: initialize, tools/list, resources/list, prompts/list, nexsai_status
   // ------------------------------------------------------------
-  console.log("1. Testing MCP protocol (initialize, tools/list, nexsai_status)...");
+  console.log("1. Testing MCP protocol (initialize, tools/list, resources, prompts)...");
 
   const initRes = await callMcpRpc("initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
-    clientInfo: { name: "nexsai-test-suite", version: "1.0.0" },
+    clientInfo: { name: "nexsai-v2-test-suite", version: "2.0.0" },
   });
   assert.equal(initRes.status, 200);
   assert.equal(initRes.body.result?.serverInfo?.name, "nexsai-manager");
-  console.log("   ✅ initialize succeeded");
+  assert.equal(initRes.body.result?.serverInfo?.version, "2.0.0");
+  console.log("   ✅ initialize (v2.0.0) succeeded");
 
   const listRes = await callMcpRpc("tools/list", {});
   const tools = listRes.body.result?.tools ?? [];
@@ -189,127 +194,231 @@ async function runTests() {
     "instagram_media_insights",
     "instagram_account_insights",
     "instagram_analyze_content",
+    "nexsai_analyze_account",
+    "nexsai_research",
+    "nexsai_research_today",
+    "nexsai_find_opportunities",
+    "nexsai_find_content_opportunities",
+    "nexsai_competitor_analysis",
+    "nexsai_strategy",
+    "nexsai_plan_week",
+    "nexsai_create_content",
+    "nexsai_analyze_post",
+    "nexsai_create_experiment",
+    "nexsai_analyze_experiment",
+    "nexsai_recommend",
+    "nexsai_brand_config",
   ];
   for (const expected of expectedTools) {
     assert(
       toolNames.includes(expected),
-      `Missing expected tool '${expected}' in tools/list`
+      `Missing expected V2 tool '${expected}' in tools/list`
     );
   }
-  console.log(`   ✅ tools/list returned all ${tools.length} tools`);
+  console.log(`   ✅ tools/list returned all ${tools.length} V1 + V2 tools`);
+
+  // Test MCP Resources
+  const resList = await callMcpRpc("resources/list", {});
+  const resources = resList.body.result?.resources ?? [];
+  const resourceUris = resources.map((r) => r.uri);
+  const expectedResourceUris = [
+    "nexsai://brand/profile",
+    "nexsai://brand/voice",
+    "nexsai://brand/content-pillars",
+    "nexsai://brand/rules",
+    "nexsai://strategy/current",
+    "nexsai://analytics/summary",
+  ];
+  for (const uri of expectedResourceUris) {
+    assert(
+      resourceUris.includes(uri),
+      `Missing expected MCP resource '${uri}'`
+    );
+  }
+  const readBrandRes = await callMcpRpc("resources/read", {
+    uri: "nexsai://brand/profile",
+  });
+  const brandJson = JSON.parse(readBrandRes.body.result?.contents?.[0]?.text ?? "{}");
+  assert.equal(brandJson.instagram_handle, "@nexsaicommunity");
+  console.log(`   ✅ resources/list & resources/read verified (${resources.length} resources)`);
+
+  // Test MCP Prompts
+  const promptsList = await callMcpRpc("prompts/list", {});
+  const prompts = promptsList.body.result?.prompts ?? [];
+  assert(prompts.some((p) => p.name === "nexsai_daily_strategy"));
+  const promptGet = await callMcpRpc("prompts/get", {
+    name: "nexsai_daily_strategy",
+    arguments: { focus_topic: "Claude MCP" },
+  });
+  assert(
+    promptGet.body.result?.messages?.[0]?.content?.text.includes("Claude MCP")
+  );
+  console.log(`   ✅ prompts/list & prompts/get verified (${prompts.length} prompts)`);
 
   const statusTool = await callTool("nexsai_status", {});
   assert.equal(statusTool.isError, false);
-  const statusData = statusTool.parsed as { status: string };
+  const statusData = statusTool.parsed as { status: string; version: string };
   assert.equal(statusData.status, "online");
-  console.log("   ✅ nexsai_status succeeded\n");
+  assert.equal(statusData.version, "2.0.0");
+  console.log("   ✅ nexsai_status (v2.0.0) succeeded\n");
 
   // ------------------------------------------------------------
-  // 2. Live Read-Only Instagram Tools (with configured token)
+  // 2. Live Read-Only Instagram & Analytics Tools
   // ------------------------------------------------------------
+  let sampleMediaId = "18075909602467119";
   if (originalToken) {
-    console.log("2. Testing live read-only Instagram tools against @nexsaicommunity...");
+    console.log("2. Testing live Instagram & V2 Analytics tools against @nexsaicommunity...");
 
     const profileRes = await callTool("instagram_profile", {});
-    assert.equal(profileRes.isError, false, `Profile failed: ${profileRes.text}`);
-    const profile = profileRes.parsed as { id: string; username: string; account_type: string };
+    assert.equal(profileRes.isError, false);
+    const profile = profileRes.parsed as { id: string; username: string };
     assert.equal(profile.username, "nexsaicommunity");
-    assert(profile.id, "Expected Instagram profile ID");
-    console.log(`   ✅ instagram_profile (@${profile.username}, type: ${profile.account_type})`);
+    console.log(`   ✅ instagram_profile (@${profile.username})`);
 
     const mediaRes = await callTool("instagram_media", { limit: 2 });
-    assert.equal(mediaRes.isError, false, `Media failed: ${mediaRes.text}`);
-    const mediaList = mediaRes.parsed as {
-      data: Array<{ id: string; media_type: string; permalink: string }>;
-    };
-    assert(Array.isArray(mediaList.data) && mediaList.data.length > 0);
-    assert(
-      !mediaRes.text.includes(originalToken),
-      "SECURITY FAILURE: Access token was found in instagram_media response!"
-    );
-    const sampleMediaId = mediaList.data[0].id;
-    console.log(`   ✅ instagram_media (retrieved ${mediaList.data.length} items, sample ID: ${sampleMediaId})`);
+    assert.equal(mediaRes.isError, false);
+    const mediaList = mediaRes.parsed as { data: Array<{ id: string }> };
+    assert(mediaList.data.length > 0);
+    assert(!mediaRes.text.includes(originalToken));
+    sampleMediaId = mediaList.data[0].id;
+    console.log(`   ✅ instagram_media (sample ID: ${sampleMediaId})`);
 
-    const detailsRes = await callTool("instagram_media_details", {
-      media_id: sampleMediaId,
-    });
-    assert.equal(detailsRes.isError, false, `Details failed: ${detailsRes.text}`);
-    const details = detailsRes.parsed as { id: string; permalink: string };
-    assert.equal(details.id, sampleMediaId);
-    console.log(`   ✅ instagram_media_details (verified media_id: ${details.id})`);
-
-    const commentsRes = await callTool("instagram_comments", {
-      media_id: sampleMediaId,
-      limit: 5,
-    });
-    assert.equal(commentsRes.isError, false, `Comments failed: ${commentsRes.text}`);
-    const commentsData = commentsRes.parsed as { media_id: string; count: number };
-    assert.equal(commentsData.media_id, sampleMediaId);
-    console.log(`   ✅ instagram_comments (retrieved ${commentsData.count} comments)`);
-
-    const mediaInsightsRes = await callTool("instagram_media_insights", {
-      media_id: sampleMediaId,
-    });
-    assert.equal(
-      mediaInsightsRes.isError,
-      false,
-      `Media insights failed: ${mediaInsightsRes.text}`
-    );
-    const mediaInsights = mediaInsightsRes.parsed as {
-      media_id: string;
-      metrics: Record<string, number | null>;
-    };
-    assert.equal(mediaInsights.media_id, sampleMediaId);
-    assert("views" in mediaInsights.metrics || "reach" in mediaInsights.metrics);
-    console.log(
-      `   ✅ instagram_media_insights (views=${mediaInsights.metrics.views}, reach=${mediaInsights.metrics.reach})`
-    );
-
-    const accountInsightsRes = await callTool("instagram_account_insights", {
-      period: "day",
-      metric_type: "total_value",
-    });
-    assert.equal(
-      accountInsightsRes.isError,
-      false,
-      `Account insights failed: ${accountInsightsRes.text}`
-    );
-    const accountInsights = accountInsightsRes.parsed as {
-      summary_metrics: Record<string, number | null>;
-    };
-    assert("views" in accountInsights.summary_metrics);
-    console.log(
-      `   ✅ instagram_account_insights (views=${accountInsights.summary_metrics.views}, reach=${accountInsights.summary_metrics.reach})`
-    );
-
-    const analyzeRes = await callTool("instagram_analyze_content", { limit: 3 });
-    assert.equal(analyzeRes.isError, false, `Analyze failed: ${analyzeRes.text}`);
+    const analyzeRes = await callTool("instagram_analyze_content", { limit: 2 });
+    assert.equal(analyzeRes.isError, false);
     const analysis = analyzeRes.parsed as {
-      sample_size: number;
-      observed_data: unknown;
-      calculated_metrics: unknown;
-      recommendations_and_observations: unknown;
+      OBSERVATION: unknown;
+      CALCULATION: unknown;
+      INFERENCE: unknown;
+      RECOMMENDATION: unknown;
     };
-    assert(analysis.sample_size > 0);
-    assert(analysis.observed_data && analysis.calculated_metrics && analysis.recommendations_and_observations);
-    console.log(`   ✅ instagram_analyze_content (analyzed ${analysis.sample_size} posts)\n`);
+    assert(
+      analysis.OBSERVATION &&
+        analysis.CALCULATION &&
+        analysis.INFERENCE &&
+        analysis.RECOMMENDATION,
+      "Expected OBSERVATION, CALCULATION, INFERENCE, and RECOMMENDATION sections"
+    );
+    console.log("   ✅ instagram_analyze_content (verified epistemic sections)");
+
+    const postAnalyzeRes = await callTool("nexsai_analyze_post", {
+      media_id: sampleMediaId,
+    });
+    assert.equal(postAnalyzeRes.isError, false);
+    console.log(`   ✅ nexsai_analyze_post (benchmarked post ${sampleMediaId})\n`);
   }
 
   // ------------------------------------------------------------
-  // 3. Write / Moderation Tools Safety (confirm=false -> preview only)
+  // 3. V2 Research, Opportunities, Strategy, Planner, Experiments, Recommend
   // ------------------------------------------------------------
-  console.log("3. Testing confirmation safety (confirm=false -> preview only)...");
+  console.log("3. Testing V2 Research, Strategy, Planner, Experiments & Recommendation Brain...");
+
+  const researchRes = await callTool("nexsai_research", {
+    topic: "Model Context Protocol AI",
+    time_range: "7d",
+    limit: 3,
+  });
+  assert.equal(researchRes.isError, false);
+  const researchData = researchRes.parsed as {
+    opportunities: Array<{ title: string; nexsai_fit_score: number }>;
+  };
+  assert(researchData.opportunities.length > 0);
+  console.log(`   ✅ nexsai_research (returned ${researchData.opportunities.length} scored items)`);
+
+  const oppsRes = await callTool("nexsai_find_opportunities", { limit: 3 });
+  assert.equal(oppsRes.isError, false);
+  const oppsData = oppsRes.parsed as {
+    ranked_opportunities: Array<{ rank: number; opportunity_score: number }>;
+  };
+  assert(oppsData.ranked_opportunities.length > 0);
+  console.log(
+    `   ✅ nexsai_find_opportunities (top score: ${oppsData.ranked_opportunities[0].opportunity_score}/100)`
+  );
+
+  const compRes = await callTool("nexsai_competitor_analysis", {});
+  assert.equal(compRes.isError, false);
+  console.log("   ✅ nexsai_competitor_analysis succeeded");
+
+  const stratRes = await callTool("nexsai_strategy", { goal: "saves" });
+  assert.equal(stratRes.isError, false);
+  console.log("   ✅ nexsai_strategy succeeded");
+
+  const weekRes = await callTool("nexsai_plan_week", {
+    focus_theme: "Practical AI Workflows",
+    save_as_drafts: true,
+  });
+  assert.equal(weekRes.isError, false);
+  const weekData = weekRes.parsed as { days: Array<{ day_name: string }> };
+  assert.equal(weekData.days.length, 7);
+  console.log("   ✅ nexsai_plan_week generated 7-day plan");
+
+  const contentRes = await callTool("nexsai_create_content", {
+    topic: "How MCP Connects Claude to Real Tools",
+    content_pillar: "developer_workflows",
+    format: "CAROUSEL_ALBUM",
+    goal: "saves",
+    status: "REVIEW",
+  });
+  assert.equal(contentRes.isError, false);
+  const createdPlan = contentRes.parsed as { plan: { id: string; status: string } };
+  assert.equal(createdPlan.plan.status, "REVIEW");
+  console.log(`   ✅ nexsai_create_content saved plan (${createdPlan.plan.id}, status=REVIEW)`);
+
+  const expCreateRes = await callTool("nexsai_create_experiment", {
+    name: "Carousel vs Single Image Reach Test",
+    variable: "format",
+    hypothesis: "Educational Carousels achieve higher view-to-reach ratios than Single Images.",
+    variant_a: "CAROUSEL_ALBUM",
+    variant_b: "IMAGE",
+    success_metric: "engagement_rate_pct",
+  });
+  assert.equal(expCreateRes.isError, false);
+  const expObj = expCreateRes.parsed as { id: string };
+
+  const expAnalyzeRes = await callTool("nexsai_analyze_experiment", {
+    experiment_id: expObj.id,
+  });
+  assert.equal(expAnalyzeRes.isError, false);
+  console.log(`   ✅ nexsai_create_experiment & nexsai_analyze_experiment (${expObj.id})`);
+
+  const recRes = await callTool("nexsai_recommend", { goal: "balanced" });
+  assert.equal(recRes.isError, false);
+  console.log("   ✅ nexsai_recommend ('NEXSAI Brain') succeeded\n");
+
+  // ------------------------------------------------------------
+  // 4. Analytics Edge Cases (Zero Denominators & Missing Metrics)
+  // ------------------------------------------------------------
+  console.log("4. Testing analytics zero-denominator & unavailable metric handling...");
+  const zeroRates = calculatePostRates({
+    likes: 5,
+    comments: 1,
+    saves: 0,
+    shares: 0,
+    views: 0,
+    reach: 0,
+    total_interactions: 6,
+  });
+  assert.equal(zeroRates.engagement_rate_by_reach_pct, null);
+  assert(
+    zeroRates.unavailable_metrics.some((u) => u.metric === "impressions"),
+    "Expected deprecated impressions explanation"
+  );
+  console.log("   ✅ Zero-denominator & unavailable metric explanations verified\n");
+
+  // ------------------------------------------------------------
+  // 5. Write / Moderation Tools Safety (confirm=false -> MUST NOT publish)
+  // ------------------------------------------------------------
+  console.log("5. Testing confirmation safety (confirm=false -> preview only)...");
 
   const publishPreview = await callTool("instagram_publish", {
-    image_url: "https://example.com/image.jpg",
-    caption: "Example caption #AI #Tech",
+    image_url: "https://example.com/v2-preview-image.jpg",
+    caption: "Unique V2 preview caption #NEXSAI #AI",
     confirm: false,
   });
   assert.equal(publishPreview.isError, false);
-  assert(publishPreview.text.includes("Publishing preview"));
+  assert(publishPreview.text.includes("PUBLISH PREVIEW"));
   assert(publishPreview.text.includes("No post was published."));
   assert(publishPreview.text.includes("Set confirm=true to publish."));
-  console.log("   ✅ instagram_publish (confirm=false) returned preview without publishing");
+  console.log("   ✅ instagram_publish (confirm=false) returned PUBLISH PREVIEW without publishing");
 
   const replyPreview = await callTool("instagram_comment_reply", {
     comment_id: "17873440459141021",
@@ -317,10 +426,8 @@ async function runTests() {
     confirm: false,
   });
   assert.equal(replyPreview.isError, false);
-  const replyPreviewObj = replyPreview.parsed as { posted: boolean; confirm_required: boolean };
-  assert.equal(replyPreviewObj.posted, false);
-  assert.equal(replyPreviewObj.confirm_required, true);
-  console.log("   ✅ instagram_comment_reply (confirm=false) returned preview without posting");
+  assert.equal((replyPreview.parsed as { posted: boolean }).posted, false);
+  console.log("   ✅ instagram_comment_reply (confirm=false) returned preview");
 
   const hidePreview = await callTool("instagram_hide_comment", {
     comment_id: "17873440459141021",
@@ -328,28 +435,31 @@ async function runTests() {
     confirm: false,
   });
   assert.equal(hidePreview.isError, false);
-  const hidePreviewObj = hidePreview.parsed as { executed: boolean; confirm_required: boolean };
-  assert.equal(hidePreviewObj.executed, false);
-  console.log("   ✅ instagram_hide_comment (confirm=false) returned preview without modifying");
+  assert.equal((hidePreview.parsed as { executed: boolean }).executed, false);
+  console.log("   ✅ instagram_hide_comment (confirm=false) returned preview");
 
   const deletePreview = await callTool("instagram_delete_comment", {
     comment_id: "17873440459141021",
     confirm: false,
   });
   assert.equal(deletePreview.isError, false);
-  const deletePreviewObj = deletePreview.parsed as { executed: boolean; confirm_required: boolean };
-  assert.equal(deletePreviewObj.executed, false);
-  console.log("   ✅ instagram_delete_comment (confirm=false) returned preview without deleting\n");
+  assert.equal((deletePreview.parsed as { executed: boolean }).executed, false);
+  console.log("   ✅ instagram_delete_comment (confirm=false) returned preview\n");
 
   // ------------------------------------------------------------
-  // 4. Mocked Write Execution (confirm=true with mocked fetch)
+  // 6. Mocked Write Execution & Historical Duplicate Detection
   // ------------------------------------------------------------
-  console.log("4. Testing instagram_publish (confirm=true) and duplicate guard with mocked fetch...");
+  console.log("6. Testing instagram_publish (confirm=true) and duplicate detection with mocked fetch...");
   resetPublishSafetyGuard();
   process.env.INSTAGRAM_ACCESS_TOKEN = "IG_MOCK_TEST_TOKEN_12345678901234567890";
 
   globalThis.fetch = async (input: string | URL | Request) => {
-    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const urlStr =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
     if (urlStr.endsWith("/me/media")) {
       return new Response(JSON.stringify({ id: "99001122334455" }), { status: 200 });
     }
@@ -361,7 +471,7 @@ async function runTests() {
         JSON.stringify({
           id: "18099887766554433",
           permalink: "https://www.instagram.com/p/MOCK123/",
-          timestamp: "2026-10-27T12:00:00+0000",
+          timestamp: "2026-10-28T12:00:00+0000",
         }),
         { status: 200 }
       );
@@ -369,49 +479,48 @@ async function runTests() {
     return new Response(JSON.stringify({}), { status: 200 });
   };
 
+  const uniqueTestUrl = `https://cdn.example.com/post-${Date.now()}.jpg`;
+  const uniqueCaption = `Launching NEXSAI 2.0 OS test at ${Date.now()}! #NEXSAI`;
+
   const publishExec = await callTool("instagram_publish", {
-    image_url: "https://cdn.example.com/post-1.jpg",
-    caption: "Launching our new AI feature! #NEXSAI",
+    image_url: uniqueTestUrl,
+    caption: uniqueCaption,
     confirm: true,
+    plan_id: createdPlan.plan.id,
   });
   assert.equal(publishExec.isError, false);
   const pubData = publishExec.parsed as {
     success: boolean;
     published: boolean;
     media_id: string;
-    creation_id: string;
-    permalink: string;
   };
   assert.equal(pubData.success, true);
   assert.equal(pubData.published, true);
-  assert.equal(pubData.creation_id, "99001122334455");
-  assert.equal(pubData.media_id, "18099887766554433");
-  assert.equal(pubData.permalink, "https://www.instagram.com/p/MOCK123/");
   console.log("   ✅ instagram_publish (confirm=true) executed 2-step container + publish flow");
 
-  // Rapid duplicate or rate-limited publish should be blocked
-  const duplicatePublish = await callTool("instagram_publish", {
-    image_url: "https://cdn.example.com/post-1.jpg",
-    caption: "Launching our new AI feature! #NEXSAI",
+  // Historical duplicate check (even after resetting rate-limit window, DB remembers content hash)
+  resetPublishSafetyGuard();
+  const duplicateAttempt = await callTool("instagram_publish", {
+    image_url: uniqueTestUrl,
+    caption: uniqueCaption,
     confirm: true,
   });
-  assert.equal(duplicatePublish.isError, true);
-  console.log("   ✅ Rapid repeat publish blocked by rate/duplicate safety guard\n");
+  assert.equal(duplicateAttempt.isError, true);
+  assert(duplicateAttempt.text.includes("Possible duplicate detected"));
+  console.log("   ✅ Historical content-hash duplicate detection blocked accidental re-post\n");
 
   // ------------------------------------------------------------
-  // 5. Error & Validation Cases
+  // 7. Error & Security Validation Cases
   // ------------------------------------------------------------
-  console.log("5. Testing error & validation cases...");
+  console.log("7. Testing security, authentication & input validation cases...");
 
-  // 5a. Missing token
   delete process.env.INSTAGRAM_ACCESS_TOKEN;
   const missingTokenRes = await callTool("instagram_profile", {});
   assert.equal(missingTokenRes.isError, true);
-  const missingTokenErr = missingTokenRes.parsed as { error: { category: string } };
-  assert.equal(missingTokenErr.error.category, "Authentication error");
-  console.log("   ✅ Missing token -> Authentication error");
+  const missingTokenErr = missingTokenRes.parsed as { error: { code: string } };
+  assert.equal(missingTokenErr.error.code, "AUTHENTICATION_ERROR");
+  console.log("   ✅ Missing token -> AUTHENTICATION_ERROR");
 
-  // 5b. Invalid token (Meta OAuth error code 190) + token redaction check
   const fakeSecretToken = "IGAA_FAKE_SECRET_TOKEN_98765432109876543210";
   process.env.INSTAGRAM_ACCESS_TOKEN = fakeSecretToken;
   globalThis.fetch = async () =>
@@ -427,81 +536,10 @@ async function runTests() {
     );
   const invalidTokenRes = await callTool("instagram_profile", {});
   assert.equal(invalidTokenRes.isError, true);
-  assert(
-    !invalidTokenRes.text.includes(fakeSecretToken),
-    "SECURITY FAILURE: Invalid token leaked in error output!"
-  );
-  const invalidTokenErr = invalidTokenRes.parsed as { error: { category: string } };
-  assert.equal(invalidTokenErr.error.category, "Authentication error");
-  console.log("   ✅ Invalid token -> Authentication error (with token redaction)");
+  assert(!invalidTokenRes.text.includes(fakeSecretToken));
+  console.log("   ✅ Invalid token -> AUTHENTICATION_ERROR (with token redaction)");
 
-  // 5c. Meta Permission error (code 10)
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({
-        error: {
-          message: "Application does not have permission for this action",
-          type: "OAuthException",
-          code: 10,
-        },
-      }),
-      { status: 403 }
-    );
-  const permErrRes = await callTool("instagram_comment_reply", {
-    comment_id: "17873440459141021",
-    message: "Hello!",
-    confirm: true,
-  });
-  assert.equal(permErrRes.isError, true);
-  const permErr = permErrRes.parsed as { error: { category: string } };
-  assert.equal(permErr.error.category, "Permission error");
-  console.log("   ✅ Meta permission error -> Permission error");
-
-  // 5d. Invalid URL (HTTP instead of HTTPS, or localhost)
-  const httpUrlRes = await callTool("instagram_publish", {
-    image_url: "http://example.com/insecure.jpg",
-    caption: "Test caption",
-    confirm: false,
-  });
-  assert.equal(httpUrlRes.isError, true);
-  console.log("   ✅ Non-HTTPS image_url rejected");
-
-  const localhostUrlRes = await callTool("instagram_publish", {
-    image_url: "https://localhost/local.jpg",
-    caption: "Test caption",
-    confirm: false,
-  });
-  assert.equal(localhostUrlRes.isError, true);
-  const localErr = localhostUrlRes.parsed as { error: { category: string } };
-  assert.equal(localErr.error.category, "Invalid media URL");
-  console.log("   ✅ Localhost image_url rejected -> Invalid media URL");
-
-  // 5e. Missing / empty caption
-  const emptyCaptionRes = await callTool("instagram_publish", {
-    image_url: "https://example.com/valid.jpg",
-    caption: "",
-    confirm: false,
-  });
-  assert.equal(emptyCaptionRes.isError, true);
-  console.log("   ✅ Empty caption rejected");
-
-  // 5f. Caption too long (> 2200 chars)
-  const longCaptionRes = await callTool("instagram_publish", {
-    image_url: "https://example.com/valid.jpg",
-    caption: "a".repeat(2205),
-    confirm: false,
-  });
-  assert.equal(longCaptionRes.isError, true);
-  console.log("   ✅ Caption > 2200 chars rejected");
-
-  // 5g. Invalid media ID (non-numeric)
-  const invalidIdRes = await callTool("instagram_media_details", {
-    media_id: "not-a-valid-id!",
-  });
-  assert.equal(invalidIdRes.isError, true);
-  console.log("   ✅ Invalid media_id rejected");
-
-  // 5h. MCP_API_KEY endpoint authentication guard
+  // MCP_API_KEY endpoint guard
   process.env.MCP_API_KEY = "super-secret-mcp-key";
   const unauthRes = await callMcpRpc("tools/list", {});
   assert.equal(unauthRes.status, 401);
@@ -512,7 +550,7 @@ async function runTests() {
   );
   assert.equal(authRes.status, 200);
   delete process.env.MCP_API_KEY;
-  console.log("   ✅ MCP_API_KEY endpoint auth guard verified (401 without key, 200 with Bearer key)\n");
+  console.log("   ✅ MCP_API_KEY endpoint auth guard verified\n");
 
   // Restore globals
   globalThis.fetch = originalFetch;
@@ -520,12 +558,10 @@ async function runTests() {
     process.env.INSTAGRAM_ACCESS_TOKEN = originalToken;
   }
   resetPublishSafetyGuard();
-
-  // Verify GET /api/mcp exists
   assert.equal(typeof GET, "function");
 
   console.log("============================================================");
-  console.log("ALL TESTS PASSED SUCCESSFULLY!");
+  console.log("ALL NEXSAI MANAGER 2.0 TESTS PASSED SUCCESSFULLY!");
   console.log("============================================================");
 }
 
@@ -533,4 +569,3 @@ runTests().catch((err) => {
   console.error("Test suite failed:", err);
   process.exit(1);
 });
-

@@ -8,6 +8,12 @@ import {
   checkPublishSafetyGuard,
   recordSuccessfulPublish,
 } from "../utils/rate-limit";
+import {
+  computeContentHash,
+  loadDatabaseState,
+  updateContentPlanStatus,
+  upsertMediaRecord,
+} from "../database/store";
 import { NexsaiMcpError } from "../utils/errors";
 import { logMcpOperation } from "../utils/logger";
 
@@ -18,6 +24,8 @@ export interface PublishInstagramImageParams {
   image_url: string;
   caption: string;
   confirm?: boolean;
+  force_duplicate?: boolean;
+  plan_id?: string;
   storageProvider?: MediaStorageProvider;
 }
 
@@ -28,13 +36,16 @@ export function countHashtags(caption: string): number {
 
 export function formatPublishPreviewText(
   imageUrl: string,
-  caption: string
+  caption: string,
+  duplicateWarning?: string
 ): string {
   return [
-    "Publishing preview",
+    "PUBLISH PREVIEW",
+    "(Publishing preview)",
     "",
     `Image: ${imageUrl}`,
     `Caption: ${caption}`,
+    ...(duplicateWarning ? ["", duplicateWarning] : []),
     "",
     "No post was published.",
     "",
@@ -80,10 +91,33 @@ export async function publishInstagramPost(
     });
   }
 
+  // Check historical database for duplicate content hash or identical caption/URL
+  const candidateHash = computeContentHash(caption, validatedImageUrl);
+  const dbState = await loadDatabaseState().catch(() => null);
+  const historicalDuplicate = dbState?.media.find(
+    (m) =>
+      m.content_hash === candidateHash ||
+      m.media_url === validatedImageUrl ||
+      (m.caption.trim().length > 20 &&
+        m.caption.trim().toLowerCase() === caption.trim().toLowerCase())
+  );
+
+  const duplicateWarningText = historicalDuplicate
+    ? [
+        "Possible duplicate detected.",
+        `Existing post: ${historicalDuplicate.platform_media_id} (${historicalDuplicate.permalink}) published at ${historicalDuplicate.published_at}`,
+        "Do you want to continue?",
+      ].join("\n")
+    : undefined;
+
   const confirm = params.confirm === true;
 
   if (!confirm) {
-    const previewText = formatPublishPreviewText(validatedImageUrl, caption);
+    const previewText = formatPublishPreviewText(
+      validatedImageUrl,
+      caption,
+      duplicateWarningText
+    );
     logMcpOperation({
       level: "info",
       tool: toolName,
@@ -101,11 +135,27 @@ export async function publishInstagramPost(
           caption,
           caption_length: caption.length,
           hashtag_count: hashtagCount,
+          ...(historicalDuplicate
+            ? {
+                possible_duplicate: {
+                  media_id: historicalDuplicate.platform_media_id,
+                  permalink: historicalDuplicate.permalink,
+                  published_at: historicalDuplicate.published_at,
+                },
+              }
+            : {}),
         },
         message: previewText,
       },
       formattedPreview: previewText,
     };
+  }
+
+  if (historicalDuplicate && !params.force_duplicate) {
+    throw new NexsaiMcpError({
+      category: "DUPLICATE_CONTENT",
+      message: `${duplicateWarningText} Pass force_duplicate=true along with confirm=true if you intentionally want to re-publish this content.`,
+    });
   }
 
   // Check duplicate / rate-limit guard before executing actual publish
@@ -177,6 +227,24 @@ export async function publishInstagramPost(
     timestamp = details.timestamp;
   } catch {
     // Non-fatal: still return published media_id and creation_id
+  }
+
+  // Record in persistent V2 database memory & update linked content plan if provided
+  await upsertMediaRecord({
+    platform: "instagram",
+    platform_media_id: publishedMediaId,
+    media_type: "IMAGE",
+    media_product_type: "FEED",
+    caption,
+    permalink: permalink ?? `https://www.instagram.com/p/${publishedMediaId}/`,
+    media_url: validatedImageUrl,
+    published_at: timestamp ?? new Date().toISOString(),
+  }).catch(() => null);
+
+  if (params.plan_id) {
+    await updateContentPlanStatus(params.plan_id, "PUBLISHED", {
+      published_media_id: publishedMediaId,
+    }).catch(() => null);
   }
 
   return {

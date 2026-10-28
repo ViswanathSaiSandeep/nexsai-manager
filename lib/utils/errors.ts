@@ -1,6 +1,15 @@
 import { redactSecrets } from "./logger";
 
 export type ErrorCategory =
+  | "AUTHENTICATION_ERROR"
+  | "PERMISSION_ERROR"
+  | "VALIDATION_ERROR"
+  | "RATE_LIMIT_ERROR"
+  | "API_ERROR"
+  | "NOT_FOUND"
+  | "DUPLICATE_CONTENT"
+  | "UNSUPPORTED_OPERATION"
+  | "CONFIRMATION_REQUIRED"
   | "Authentication error"
   | "Permission error"
   | "Invalid media URL"
@@ -9,6 +18,26 @@ export type ErrorCategory =
   | "Validation error"
   | "Unsupported operation"
   | "Duplicate publish protection";
+
+const STANDARD_CODE_MAP: Record<ErrorCategory, string> = {
+  AUTHENTICATION_ERROR: "AUTHENTICATION_ERROR",
+  "Authentication error": "AUTHENTICATION_ERROR",
+  PERMISSION_ERROR: "PERMISSION_ERROR",
+  "Permission error": "PERMISSION_ERROR",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+  "Validation error": "VALIDATION_ERROR",
+  "Invalid media URL": "VALIDATION_ERROR",
+  RATE_LIMIT_ERROR: "RATE_LIMIT_ERROR",
+  "Rate limit error": "RATE_LIMIT_ERROR",
+  API_ERROR: "API_ERROR",
+  "Instagram API error": "API_ERROR",
+  NOT_FOUND: "NOT_FOUND",
+  DUPLICATE_CONTENT: "DUPLICATE_CONTENT",
+  "Duplicate publish protection": "DUPLICATE_CONTENT",
+  UNSUPPORTED_OPERATION: "UNSUPPORTED_OPERATION",
+  "Unsupported operation": "UNSUPPORTED_OPERATION",
+  CONFIRMATION_REQUIRED: "CONFIRMATION_REQUIRED",
+};
 
 export class NexsaiMcpError extends Error {
   public readonly category: ErrorCategory;
@@ -38,6 +67,7 @@ export class NexsaiMcpError extends Error {
     return {
       success: false,
       error: {
+        code: STANDARD_CODE_MAP[this.category] ?? "API_ERROR",
         category: this.category,
         message: this.message,
         ...(this.statusCode !== undefined ? { http_status: this.statusCode } : {}),

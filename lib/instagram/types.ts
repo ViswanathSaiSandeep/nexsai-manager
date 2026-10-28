@@ -77,6 +77,11 @@ export interface InstagramPublishPreviewResult {
     caption: string;
     caption_length: number;
     hashtag_count: number;
+    possible_duplicate?: {
+      media_id: string;
+      permalink: string;
+      published_at: string;
+    };
   };
   message: string;
 }
