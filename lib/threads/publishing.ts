@@ -44,6 +44,278 @@ export interface PublishThreadsPostParams {
   storageProvider?: MediaStorageProvider;
 }
 
+/**
+ * Timing configuration for the Threads container → publish pipeline.
+ * Exported (mutable) so automated tests can shorten delays.
+ */
+export const threadsPublishTiming = {
+  /** Delay between container status polls. */
+  pollIntervalMs: 1500,
+  /** Max time to wait for TEXT / IMAGE containers to reach FINISHED. */
+  maxPollMsDefault: 30_000,
+  /** Max time to wait for VIDEO / CAROUSEL containers to reach FINISHED. */
+  maxPollMsVideo: 120_000,
+  /**
+   * Back-off delays used ONLY when threads_publish returns Meta code 24 / subcode 4279009
+   * ("The requested resource does not exist") for a container we have already confirmed FINISHED.
+   * Meta documents this as a propagation delay; before every retry we re-check the container
+   * status so an already-PUBLISHED container is never published twice.
+   */
+  publishRetryDelaysMs: [2000, 4000, 8000],
+};
+
+/** Meta subcode returned when a container ID cannot (yet) be found by the publishing node. */
+export const THREADS_CONTAINER_NOT_FOUND_SUBCODE = 4279009;
+
+type ThreadsContainerStatus =
+  | "IN_PROGRESS"
+  | "FINISHED"
+  | "PUBLISHED"
+  | "ERROR"
+  | "EXPIRED";
+
+interface ContainerStatusResponse {
+  id?: string;
+  status?: ThreadsContainerStatus;
+  error_message?: string;
+}
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function isContainerNotFoundError(err: unknown): err is NexsaiMcpError {
+  return (
+    err instanceof NexsaiMcpError &&
+    (err.metaErrorSubcode === THREADS_CONTAINER_NOT_FOUND_SUBCODE ||
+      err.metaErrorCode === 24)
+  );
+}
+
+/**
+ * Resolves the numeric Threads user ID of the account that owns THREADS_ACCESS_TOKEN.
+ *
+ * - Uses `GET /me?fields=id` so the container-creation and publish calls always target the
+ *   same, token-owning account.
+ * - If THREADS_USER_ID is configured and does NOT match the token's account, fails with a clear
+ *   error instead of letting Meta return a misleading "resource does not exist".
+ * - Falls back to `me` only if Meta returns no ID.
+ */
+export async function resolveThreadsPublishingUserId(
+  toolName = "threads_publish"
+): Promise<string> {
+  const configured = process.env.THREADS_USER_ID?.trim();
+  const configuredId = configured && configured !== "me" ? configured : undefined;
+
+  const me = await threadsGraphRequest<{ id?: string; username?: string }>({
+    path: "/me",
+    method: "GET",
+    queryParams: { fields: "id,username" },
+    operationName: "publishThreadsPost:resolveUserId",
+    toolName,
+  });
+
+  if (me.id) {
+    if (configuredId && configuredId !== me.id) {
+      throw new NexsaiMcpError({
+        category: "Validation error",
+        message: `THREADS_USER_ID (${configuredId}) does not match the Threads account that owns THREADS_ACCESS_TOKEN (${me.id}${
+          me.username ? `, @${me.username}` : ""
+        }). Remove THREADS_USER_ID or set it to ${me.id}.`,
+      });
+    }
+    return me.id;
+  }
+
+  return configuredId ?? "me";
+}
+
+/**
+ * Polls `GET /{creation_id}?fields=id,status,error_message` until the container is FINISHED.
+ *
+ * - FINISHED → returns.
+ * - ERROR / EXPIRED → throws with Meta's error_message (never retried; a failed container must be recreated).
+ * - PUBLISHED → throws (container was already used; publishing again would duplicate).
+ * - IN_PROGRESS, or not-yet-visible (code 24 / subcode 4279009) → keeps polling until the time budget is spent.
+ * - Any other error is surfaced with the stage and creation_id — never swallowed.
+ */
+async function waitForThreadsContainerReady(
+  creationId: string,
+  mediaType: ThreadsPublishMediaType | "IMAGE" | "VIDEO",
+  label: string,
+  toolName: string
+): Promise<{ status: ThreadsContainerStatus; polls: number; waited_ms: number }> {
+  const maxMs =
+    mediaType === "VIDEO" || mediaType === "CAROUSEL"
+      ? threadsPublishTiming.maxPollMsVideo
+      : threadsPublishTiming.maxPollMsDefault;
+  const start = Date.now();
+  let polls = 0;
+  let lastStatus: string = "UNKNOWN";
+
+  while (true) {
+    polls += 1;
+    let st: ContainerStatusResponse | undefined;
+    try {
+      st = await threadsGraphRequest<ContainerStatusResponse>({
+        path: `/${encodeURIComponent(creationId)}`,
+        method: "GET",
+        queryParams: { fields: "id,status,error_message" },
+        operationName: `publishThreadsPost:pollContainerStatus:${label}`,
+        toolName,
+      });
+      lastStatus = st.status ?? "UNKNOWN";
+    } catch (err) {
+      if (isContainerNotFoundError(err)) {
+        lastStatus = "NOT_YET_VISIBLE";
+      } else {
+        throw new NexsaiMcpError({
+          category: "Threads API error",
+          message: `Threads container status check failed (stage=pollContainerStatus, ${label} creation_id=${creationId}): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          statusCode: err instanceof NexsaiMcpError ? err.statusCode : undefined,
+          metaErrorCode: err instanceof NexsaiMcpError ? err.metaErrorCode : undefined,
+          metaErrorSubcode:
+            err instanceof NexsaiMcpError ? err.metaErrorSubcode : undefined,
+          details: err instanceof NexsaiMcpError ? err.details : undefined,
+        });
+      }
+    }
+
+    const waited = Date.now() - start;
+
+    if (st?.status === "FINISHED") {
+      logMcpOperation({
+        level: "info",
+        tool: toolName,
+        operation: `publishThreadsPost:containerReady:${label}`,
+        success: true,
+        message: `Container ${creationId} FINISHED after ${polls} poll(s) / ${waited}ms.`,
+      });
+      return { status: "FINISHED", polls, waited_ms: waited };
+    }
+
+    if (st?.status === "ERROR" || st?.status === "EXPIRED") {
+      throw new NexsaiMcpError({
+        category: "Threads API error",
+        message: `Threads media container failed with status ${st.status} (stage=pollContainerStatus, ${label} creation_id=${creationId})${
+          st.error_message ? `: ${st.error_message}` : ""
+        }. The container cannot be published; fix the input (e.g. media URL) and create a new post. No retry was attempted.`,
+      });
+    }
+
+    if (st?.status === "PUBLISHED") {
+      throw new NexsaiMcpError({
+        category: "Duplicate publish protection",
+        message: `Threads container ${creationId} is already PUBLISHED. It will not be published again.`,
+      });
+    }
+
+    if (waited + threadsPublishTiming.pollIntervalMs > maxMs) {
+      throw new NexsaiMcpError({
+        category: "Threads API error",
+        message: `Threads container ${creationId} (${label}) did not reach FINISHED within ${Math.round(
+          maxMs / 1000
+        )}s (last status: ${lastStatus}, polls: ${polls}). Nothing was published. Try again later.`,
+      });
+    }
+
+    await sleep(threadsPublishTiming.pollIntervalMs);
+  }
+}
+
+/**
+ * Calls `POST /{user_id}/threads_publish` with the exact creation_id.
+ *
+ * Retries ONLY on Meta code 24 / subcode 4279009 (container not found on the publishing node —
+ * a documented propagation delay). Before each retry the container status is re-read:
+ * if it is already PUBLISHED we stop (never double-publish); if ERROR/EXPIRED we fail.
+ * All other errors fail immediately.
+ */
+async function publishThreadsContainerWithRetry(
+  userId: string,
+  creationId: string,
+  toolName: string
+): Promise<{ id: string; attempts: number }> {
+  const delays = threadsPublishTiming.publishRetryDelaysMs;
+  let attempt = 0;
+
+  while (true) {
+    attempt += 1;
+    try {
+      const publishData = await threadsGraphRequest<{ id?: string }>({
+        path: `/${encodeURIComponent(userId)}/threads_publish`,
+        method: "POST",
+        formBody: { creation_id: creationId },
+        operationName: `publishThreadsPost:publishContainer:attempt${attempt}`,
+        toolName,
+      });
+      if (!publishData.id) {
+        throw new NexsaiMcpError({
+          category: "Threads API error",
+          message: `Threads returned no published media ID from threads_publish (creation_id=${creationId}).`,
+        });
+      }
+      return { id: publishData.id, attempts: attempt };
+    } catch (err) {
+      if (!isContainerNotFoundError(err) || attempt > delays.length) {
+        const base = err instanceof Error ? err.message : String(err);
+        throw new NexsaiMcpError({
+          category:
+            err instanceof NexsaiMcpError ? err.category : "Threads API error",
+          message: `Threads publish failed (stage=publishContainer, user_id=${userId}, creation_id=${creationId}, attempts=${attempt}): ${base}${
+            isContainerNotFoundError(err)
+              ? " — Meta still reports the container as not found after all retries. The container was confirmed FINISHED before publishing, so this is a Meta-side propagation issue. Nothing was published; try again in a minute."
+              : ""
+          }`,
+          statusCode: err instanceof NexsaiMcpError ? err.statusCode : undefined,
+          metaErrorCode: err instanceof NexsaiMcpError ? err.metaErrorCode : undefined,
+          metaErrorSubcode:
+            err instanceof NexsaiMcpError ? err.metaErrorSubcode : undefined,
+          details: err instanceof NexsaiMcpError ? err.details : undefined,
+        });
+      }
+
+      logMcpOperation({
+        level: "warn",
+        tool: toolName,
+        operation: "publishThreadsPost:publishContainer:retry",
+        success: false,
+        message: `threads_publish returned code 24/subcode ${THREADS_CONTAINER_NOT_FOUND_SUBCODE} for creation_id=${creationId} (attempt ${attempt}). Re-checking container and retrying in ${delays[attempt - 1]}ms.`,
+      });
+
+      await sleep(delays[attempt - 1]);
+
+      // Safety: re-read the container before retrying so we never publish twice.
+      const recheck = await threadsGraphRequest<ContainerStatusResponse>({
+        path: `/${encodeURIComponent(creationId)}`,
+        method: "GET",
+        queryParams: { fields: "id,status,error_message" },
+        operationName: "publishThreadsPost:recheckBeforeRetry",
+        toolName,
+      }).catch((recheckErr: unknown) => {
+        if (isContainerNotFoundError(recheckErr)) return undefined;
+        throw recheckErr;
+      });
+
+      if (recheck?.status === "PUBLISHED") {
+        throw new NexsaiMcpError({
+          category: "Threads API error",
+          message: `Container ${creationId} now reports PUBLISHED even though threads_publish returned an error. The post was probably published; check the Threads profile before trying again. No further publish attempts were made.`,
+        });
+      }
+      if (recheck?.status === "ERROR" || recheck?.status === "EXPIRED") {
+        throw new NexsaiMcpError({
+          category: "Threads API error",
+          message: `Container ${creationId} moved to ${recheck.status} while publishing${
+            recheck.error_message ? `: ${recheck.error_message}` : ""
+          }. Nothing was published.`,
+        });
+      }
+    }
+  }
+}
+
 export function validateThreadsTopicTag(tag: string): string {
   const cleaned = tag.replace(/^#/, "").trim();
   if (!cleaned || cleaned.length > 50) {
@@ -327,14 +599,19 @@ export async function publishThreadsPost(
 
   checkPublishSafetyGuard(`threads:${primaryMediaUrl}`, text || mediaType);
 
-  let creationId: string;
+  let creationId: string | undefined;
+  let userId = "me";
 
   try {
+    // STEP 0 — Resolve the numeric user ID that owns the token, so create + publish target the same account.
+    userId = await resolveThreadsPublishingUserId(toolName);
+    const createPath = `/${encodeURIComponent(userId)}/threads`;
+
     if (mediaType === "CAROUSEL" && params.carousel_items) {
       const childIds: string[] = [];
       for (const item of params.carousel_items) {
         const childData = await threadsGraphRequest<{ id?: string }>({
-          path: "/me/threads",
+          path: createPath,
           method: "POST",
           formBody: {
             media_type: item.media_type,
@@ -355,8 +632,18 @@ export async function publishThreadsPost(
         childIds.push(childData.id);
       }
 
+      // Every child container must be FINISHED before the parent carousel can be created/published.
+      for (const [index, childId] of childIds.entries()) {
+        await waitForThreadsContainerReady(
+          childId,
+          params.carousel_items[index]?.media_type ?? "IMAGE",
+          `carouselChild${index + 1}`,
+          toolName
+        );
+      }
+
       const parentData = await threadsGraphRequest<{ id?: string }>({
-        path: "/me/threads",
+        path: createPath,
         method: "POST",
         formBody: {
           media_type: "CAROUSEL",
@@ -380,7 +667,7 @@ export async function publishThreadsPost(
       creationId = parentData.id;
     } else {
       const containerData = await threadsGraphRequest<{ id?: string }>({
-        path: "/me/threads",
+        path: createPath,
         method: "POST",
         formBody: {
           media_type: mediaType,
@@ -410,50 +697,22 @@ export async function publishThreadsPost(
       creationId = containerData.id;
     }
 
-    // Check container status if VIDEO or CAROUSEL (or verify not ERROR)
-    const statusCheck = await threadsGraphRequest<{
-      id?: string;
-      status?: "IN_PROGRESS" | "FINISHED" | "PUBLISHED" | "ERROR" | "EXPIRED";
-      error_message?: string;
-    }>({
-      path: `/${encodeURIComponent(creationId)}`,
-      method: "GET",
-      queryParams: {
-        fields: "id,status,error_message",
-      },
-      operationName: "publishThreadsPost:checkContainerStatus",
-      toolName,
-    }).catch(() => null);
+    // STEP 1b — Poll the container until FINISHED (fails fast on ERROR/EXPIRED, never swallowed).
+    const readiness = await waitForThreadsContainerReady(
+      creationId,
+      mediaType,
+      "container",
+      toolName
+    );
 
-    if (statusCheck?.status === "ERROR" || statusCheck?.status === "EXPIRED") {
-      throw new NexsaiMcpError({
-        category: "Threads API error",
-        message: `Threads media container failed with status ${statusCheck.status}${
-          statusCheck.error_message ? `: ${statusCheck.error_message}` : ""
-        }.`,
-      });
-    }
+    // STEP 2 — PUBLISH CONTAINER (exact creation_id, same user_id; bounded retry only for code 24/4279009)
+    const published = await publishThreadsContainerWithRetry(
+      userId,
+      creationId,
+      toolName
+    );
 
-    // STEP 2 — PUBLISH CONTAINER
-    const publishData = await threadsGraphRequest<{ id?: string }>({
-      path: "/me/threads_publish",
-      method: "POST",
-      formBody: {
-        creation_id: creationId,
-      },
-      operationName: "publishThreadsPost:publishContainer",
-      toolName,
-    });
-
-    if (!publishData.id) {
-      throw new NexsaiMcpError({
-        category: "Threads API error",
-        message:
-          "Threads did not return a published media ID after calling threads_publish.",
-      });
-    }
-
-    const publishedMediaId = publishData.id;
+    const publishedMediaId = published.id;
     recordSuccessfulPublish(
       `threads:${primaryMediaUrl}`,
       text || mediaType,
@@ -531,11 +790,28 @@ export async function publishThreadsPost(
         media_id: publishedMediaId,
         creation_id: creationId,
         media_type: mediaType,
+        diagnostics: {
+          user_id: userId,
+          container_status_before_publish: readiness.status,
+          container_polls: readiness.polls,
+          container_wait_ms: readiness.waited_ms,
+          publish_attempts: published.attempts,
+        },
         ...(permalink ? { permalink } : {}),
         ...(timestamp ? { timestamp } : {}),
       },
     };
   } catch (err) {
+    logMcpOperation({
+      level: "error",
+      tool: toolName,
+      operation: "publishThreadsPost:failed",
+      success: false,
+      errorType: err instanceof NexsaiMcpError ? err.category : "Threads API error",
+      message: `Threads publish pipeline failed (user_id=${userId}, creation_id=${
+        creationId ?? "not created"
+      }, media_type=${mediaType}): ${err instanceof Error ? err.message : String(err)}`,
+    });
     if (params.plan_id) {
       await updateContentPlanStatus(
         params.plan_id,

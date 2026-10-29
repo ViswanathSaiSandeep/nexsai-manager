@@ -156,6 +156,14 @@ export interface ThreadsPublishSuccessResult {
   media_type: ThreadsPublishMediaType;
   permalink?: string;
   timestamp?: string;
+  /** Non-secret pipeline diagnostics (user ID, container status, poll/attempt counts). */
+  diagnostics?: {
+    user_id: string;
+    container_status_before_publish: string;
+    container_polls: number;
+    container_wait_ms: number;
+    publish_attempts: number;
+  };
 }
 
 export type ThreadsPublishResult =

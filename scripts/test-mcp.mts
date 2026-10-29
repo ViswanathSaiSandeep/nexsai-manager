@@ -28,6 +28,7 @@ import {
 } from "../app/api/webhooks/threads/route.ts";
 import { resetPublishSafetyGuard } from "../lib/utils/rate-limit.ts";
 import { calculatePostRates } from "../lib/analytics/metrics.ts";
+import { threadsPublishTiming } from "../lib/threads/publishing.ts";
 
 // Load .env.local if not already loaded
 const envLocalPath = path.resolve(process.cwd(), ".env.local");
@@ -585,6 +586,151 @@ async function runTests() {
   assert.equal(thDupAttempt.isError, true);
   assert(thDupAttempt.text.includes("Possible duplicate Threads post detected"));
   console.log("   ✅ Threads persistent duplicate content-hash detection blocked re-post");
+
+  // 5c-2. Regression: Meta code 24 / subcode 4279009 at publishContainer (bug report)
+  threadsPublishTiming.pollIntervalMs = 5;
+  threadsPublishTiming.publishRetryDelaysMs = [5, 5, 5];
+  const MOCK_USER = "29940267035561191";
+  const notFoundBody = JSON.stringify({
+    error: {
+      message: "The requested resource does not exist",
+      type: "OAuthException",
+      code: 24,
+      error_subcode: 4279009,
+      fbtrace_id: "MOCK_TRACE",
+    },
+  });
+  const urlOf = (input: string | URL | Request) =>
+    typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+  // (a) IN_PROGRESS -> FINISHED polling, then publish returns 4279009 once, then succeeds.
+  {
+    resetPublishSafetyGuard();
+    let polls = 0;
+    let publishCalls = 0;
+    const calledPaths: string[] = [];
+    globalThis.fetch = async (input: string | URL | Request) => {
+      const u = urlOf(input);
+      calledPaths.push(new URL(u).pathname);
+      if (u.includes("/v1.0/me?")) {
+        return new Response(JSON.stringify({ id: MOCK_USER, username: "nexsaicommunity" }), { status: 200 });
+      }
+      if (u.includes(`/${MOCK_USER}/threads_publish`)) {
+        publishCalls += 1;
+        if (publishCalls === 1) return new Response(notFoundBody, { status: 400 });
+        return new Response(JSON.stringify({ id: "17900000000000001" }), { status: 200 });
+      }
+      if (u.includes(`/${MOCK_USER}/threads`)) {
+        return new Response(JSON.stringify({ id: "55500000000000001" }), { status: 200 });
+      }
+      if (u.includes("/55500000000000001")) {
+        polls += 1;
+        return new Response(
+          JSON.stringify({ id: "55500000000000001", status: polls < 3 ? "IN_PROGRESS" : "FINISHED" }),
+          { status: 200 }
+        );
+      }
+      if (u.includes("/17900000000000001")) {
+        return new Response(JSON.stringify({ id: "17900000000000001", permalink: "https://www.threads.com/@nexsaicommunity/post/MOCK_RETRY" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    };
+    const res = await callTool("threads_publish", {
+      media_type: "TEXT",
+      text: `4279009 retry regression ${Date.now()}`,
+      confirm: true,
+    });
+    assert.equal(res.isError, false, res.text);
+    const data = res.parsed as { media_id: string; creation_id: string; diagnostics: { user_id: string; container_polls: number; publish_attempts: number } };
+    assert.equal(data.media_id, "17900000000000001");
+    assert.equal(data.creation_id, "55500000000000001");
+    assert.equal(data.diagnostics.user_id, MOCK_USER);
+    assert(data.diagnostics.container_polls >= 3);
+    assert.equal(data.diagnostics.publish_attempts, 2);
+    assert(calledPaths.includes(`/v1.0/${MOCK_USER}/threads`), "container created on numeric user id");
+    assert(calledPaths.includes(`/v1.0/${MOCK_USER}/threads_publish`), "published on same numeric user id");
+    console.log("   ✅ Container polled IN_PROGRESS→FINISHED; 4279009 at publish retried safely and succeeded");
+  }
+
+  // (b) Container flips to PUBLISHED during retry -> stop, never publish twice.
+  {
+    resetPublishSafetyGuard();
+    let publishCalls = 0;
+    let statusReads = 0;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      const u = urlOf(input);
+      if (u.includes("/v1.0/me?")) return new Response(JSON.stringify({ id: MOCK_USER }), { status: 200 });
+      if (u.includes(`/${MOCK_USER}/threads_publish`)) {
+        publishCalls += 1;
+        return new Response(notFoundBody, { status: 400 });
+      }
+      if (u.includes(`/${MOCK_USER}/threads`)) return new Response(JSON.stringify({ id: "55500000000000002" }), { status: 200 });
+      if (u.includes("/55500000000000002")) {
+        statusReads += 1;
+        return new Response(JSON.stringify({ id: "55500000000000002", status: statusReads === 1 ? "FINISHED" : "PUBLISHED" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    };
+    const res = await callTool("threads_publish", {
+      media_type: "TEXT",
+      text: `no double publish regression ${Date.now()}`,
+      confirm: true,
+    });
+    assert.equal(res.isError, true);
+    assert.equal(publishCalls, 1, "must not call threads_publish again once container is PUBLISHED");
+    assert(res.text.includes("PUBLISHED"));
+    console.log("   ✅ Retry halts when container reports PUBLISHED (no double publish)");
+  }
+
+  // (c) Persistent 4279009 -> clear error with stage, user_id, creation_id, subcode.
+  {
+    resetPublishSafetyGuard();
+    globalThis.fetch = async (input: string | URL | Request) => {
+      const u = urlOf(input);
+      if (u.includes("/v1.0/me?")) return new Response(JSON.stringify({ id: MOCK_USER }), { status: 200 });
+      if (u.includes(`/${MOCK_USER}/threads_publish`)) return new Response(notFoundBody, { status: 400 });
+      if (u.includes(`/${MOCK_USER}/threads`)) return new Response(JSON.stringify({ id: "55500000000000003" }), { status: 200 });
+      if (u.includes("/55500000000000003")) return new Response(JSON.stringify({ id: "55500000000000003", status: "FINISHED" }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    };
+    const res = await callTool("threads_publish", {
+      media_type: "TEXT",
+      text: `persistent 4279009 regression ${Date.now()}`,
+      confirm: true,
+    });
+    assert.equal(res.isError, true);
+    assert(res.text.includes("stage=publishContainer"));
+    assert(res.text.includes("creation_id=55500000000000003"));
+    assert(res.text.includes(`user_id=${MOCK_USER}`));
+    assert(res.text.includes("4279009"));
+    assert(res.text.includes("attempts=4"));
+    console.log("   ✅ Persistent 4279009 returns a clear, diagnosable error (bounded to 4 attempts)");
+  }
+
+  // (d) THREADS_USER_ID mismatch -> fail before creating any container.
+  {
+    resetPublishSafetyGuard();
+    const prevUserId = process.env.THREADS_USER_ID;
+    process.env.THREADS_USER_ID = "11111111111111111";
+    let containerCreated = false;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      const u = urlOf(input);
+      if (u.includes("/v1.0/me?")) return new Response(JSON.stringify({ id: MOCK_USER, username: "nexsaicommunity" }), { status: 200 });
+      if (u.includes("/threads")) containerCreated = true;
+      return new Response(JSON.stringify({ id: "x" }), { status: 200 });
+    };
+    const res = await callTool("threads_publish", {
+      media_type: "TEXT",
+      text: `user id mismatch regression ${Date.now()}`,
+      confirm: true,
+    });
+    if (prevUserId === undefined) delete process.env.THREADS_USER_ID;
+    else process.env.THREADS_USER_ID = prevUserId;
+    assert.equal(res.isError, true);
+    assert.equal(containerCreated, false);
+    assert(res.text.includes("does not match"));
+    console.log("   ✅ THREADS_USER_ID / token-owner mismatch detected before container creation");
+  }
 
   // 5d. Test Cross-Platform Partial Success (Instagram succeeds, Threads fails -> status="partial_success")
   resetPublishSafetyGuard();

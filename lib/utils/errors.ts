@@ -109,6 +109,9 @@ export function classifyMetaApiError(
   const subcode = errObj?.error_subcode;
   const rawMessage = errObj?.message || `HTTP ${status} during ${fallbackContext}`;
   const safeMessage = redactSecrets(rawMessage);
+  const traceDetails = errObj?.fbtrace_id
+    ? `fbtrace_id=${errObj.fbtrace_id}`
+    : undefined;
   const envVarName =
     platform === "Threads" ? "THREADS_ACCESS_TOKEN" : "INSTAGRAM_ACCESS_TOKEN";
   const apiErrorCategory: ErrorCategory =
@@ -181,6 +184,7 @@ export function classifyMetaApiError(
     statusCode: status,
     metaErrorCode: code,
     metaErrorSubcode: subcode,
+    details: traceDetails,
   });
 }
 
