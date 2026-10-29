@@ -204,13 +204,17 @@ export async function generateSevenDayPlan(params: {
  */
 export async function createOrUpdateContentBrief(params: {
   plan_id?: string;
+  platform?: "instagram" | "threads" | "both";
+  campaign?: string;
   topic: string;
   content_pillar?: ContentPillarId;
-  format?: "IMAGE" | "CAROUSEL_ALBUM" | "REELS";
+  format?: "IMAGE" | "CAROUSEL_ALBUM" | "REELS" | "TEXT" | "VIDEO" | "CAROUSEL";
   goal?: "reach" | "saves" | "engagement" | "followers" | "education";
   hook?: string;
   headline?: string;
   caption?: string;
+  threads_text?: string;
+  threads_topic_tag?: string;
   cta?: string;
   hashtags?: string[];
   visual_brief?: string;
@@ -222,6 +226,7 @@ export async function createOrUpdateContentBrief(params: {
   plan: ContentPlanRecord;
   brand_constraints_applied: {
     max_caption_length: number;
+    max_threads_text_length: number;
     recommended_hashtag_count: string;
     aspect_ratios: string[];
     voice_style: string;
@@ -229,19 +234,23 @@ export async function createOrUpdateContentBrief(params: {
   approval_workflow_next_step: string;
 }> {
   const state = await loadDatabaseState();
+  const platform = params.platform ?? "instagram";
   const pillarId = params.content_pillar ?? "ai_tools_productivity";
-  const format = params.format ?? "CAROUSEL_ALBUM";
+  const format =
+    params.format ?? (platform === "threads" ? "TEXT" : "CAROUSEL_ALBUM");
   const goal = params.goal ?? "saves";
 
   const hook =
     params.hook ??
-    (format === "CAROUSEL_ALBUM"
+    (format === "CAROUSEL_ALBUM" || format === "CAROUSEL"
       ? `🚀 Top 3 Things You Can Do With ${params.topic}:`
       : `👀 Ever wondered how ${params.topic} actually works?`);
 
   const cta =
     params.cta ??
-    (goal === "saves"
+    (platform === "threads"
+      ? "💬 Are you testing this in your workflow? Drop your take below"
+      : goal === "saves"
       ? "💾 Save this guide for your next workflow & follow @nexsaicommunity"
       : "🔔 Follow @nexsaicommunity for daily AI & tech insights");
 
@@ -251,7 +260,7 @@ export async function createOrUpdateContentBrief(params: {
       : state.brand.default_hashtags.slice(0, 6);
 
   const defaultSlides =
-    format === "CAROUSEL_ALBUM"
+    format === "CAROUSEL_ALBUM" || format === "CAROUSEL"
       ? [
           `Slide 1 (Hook): ${params.headline ?? hook}`,
           `Slide 2 (Core Problem / Context): Why ${params.topic} matters right now`,
@@ -276,10 +285,24 @@ export async function createOrUpdateContentBrief(params: {
       hashtags.join(" "),
     ].join("\n");
 
+  const defaultThreadsText = [
+    hook,
+    "",
+    `▪️ Core capability of ${params.topic}`,
+    "▪️ Practical workflow & speed gain",
+    "▪️ Key trade-off to watch out for",
+    "",
+    "💬 Are you using this in your stack yet?",
+  ]
+    .join("\n")
+    .slice(0, 495);
+
+  const threadsText = params.threads_text ?? defaultThreadsText;
+
   const visualBrief =
     params.visual_brief ??
     `Dark-mode tech card (${
-      format === "REELS" ? "9:16 1080x1920" : "4:5 1080x1350"
+      format === "REELS" || format === "VIDEO" ? "9:16 1080x1920" : "4:5 1080x1350"
     }). Bold headline '${
       params.headline ?? params.topic
     }', clean iconography, high-contrast electric cyan/white typography on deep zinc background.`;
@@ -288,6 +311,8 @@ export async function createOrUpdateContentBrief(params: {
 
   const savedPlan = await saveContentPlan({
     id: params.plan_id,
+    platform,
+    campaign: params.campaign,
     topic: params.topic,
     content_pillar: pillarId,
     format,
@@ -297,6 +322,11 @@ export async function createOrUpdateContentBrief(params: {
     hook,
     headline: params.headline ?? params.topic,
     caption,
+    threads_text: threadsText,
+    threads_topic_tag:
+      params.threads_topic_tag ??
+      hashtags[0]?.replace(/^#/, "").replace(/[.&]/g, "") ??
+      "NEXSAI",
     cta,
     hashtags,
     visual_brief: visualBrief,
@@ -306,15 +336,19 @@ export async function createOrUpdateContentBrief(params: {
 
   const nextStepMap: Record<ContentPlanRecord["status"], string> = {
     DRAFT:
-      "Review the generated hook, caption, and visual brief with the user. Update status to 'REVIEW' or 'APPROVED' once refined.",
+      "Review the generated hook, Instagram caption, Threads text (<=500 chars), and visual brief with the user. Update status to 'REVIEW' or 'APPROVED' once refined.",
     REVIEW:
       "Awaiting human approval. Once approved by the user, transition status to 'APPROVED'.",
     APPROVED:
-      "Content is approved! Provide a publicly accessible HTTPS image_url and call `instagram_publish` with `confirm: false` to preview, then `confirm: true` to publish.",
+      platform === "threads"
+        ? "Content is approved! Call `threads_publish` with `confirm: false` to preview, then `confirm: true` to publish."
+        : platform === "both"
+        ? "Content is approved! Call `nexsai_cross_platform_publish` with `confirm: false` to preview both platforms, then `confirm: true` to publish."
+        : "Content is approved! Provide a publicly accessible HTTPS image_url and call `instagram_publish` with `confirm: false` to preview, then `confirm: true` to publish.",
     SCHEDULED:
-      "Content plan is scheduled in the NEXSAI calendar queue.",
+      "Content plan is recorded as SCHEDULED in the NEXSAI calendar queue. Note: Vercel serverless does not run in-process background timers; trigger publishing via MCP or an external cron hitting the publish workflow at the scheduled time.",
     PUBLISHED:
-      "Post is live! Call `nexsai_analyze_post` after 24–48 hours to benchmark performance.",
+      "Post is live! Call `nexsai_analyze_post` or `nexsai_threads_analyze` after 24–48 hours to benchmark performance.",
     ANALYZING:
       "Performance tracking in progress.",
     ARCHIVED: "Archived content plan.",
@@ -324,7 +358,8 @@ export async function createOrUpdateContentBrief(params: {
     plan: savedPlan,
     brand_constraints_applied: {
       max_caption_length: 2200,
-      recommended_hashtag_count: "5 to 8 focused tags",
+      max_threads_text_length: 500,
+      recommended_hashtag_count: "5 to 8 focused tags (1 topic_tag on Threads)",
       aspect_ratios: state.brand.visual_identity.aspect_ratios,
       voice_style: state.brand.voice_and_tone.style,
     },

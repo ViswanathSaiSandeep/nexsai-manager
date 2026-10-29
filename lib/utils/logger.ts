@@ -21,6 +21,7 @@ const TOKEN_PATTERNS = [
   /access_token=[^&\s"']+/gi,
   /Bearer\s+[A-Za-z0-9._\-]+/gi,
   /IG[A-Za-z0-9._\-]{20,}/g,
+  /TH[A-Za-z0-9._\-]{20,}/g,
   /EA[A-Za-z0-9._\-]{20,}/g,
 ];
 
@@ -29,13 +30,18 @@ const TOKEN_PATTERNS = [
  */
 export function redactSecrets(input: string): string {
   let sanitized = input;
-  const envToken = process.env.INSTAGRAM_ACCESS_TOKEN;
-  if (envToken && envToken.length > 4) {
-    sanitized = sanitized.split(envToken).join("[REDACTED_TOKEN]");
-  }
-  const mcpSecret = process.env.MCP_API_KEY;
-  if (mcpSecret && mcpSecret.length > 4) {
-    sanitized = sanitized.split(mcpSecret).join("[REDACTED_KEY]");
+  const secretEnvVars = [
+    process.env.INSTAGRAM_ACCESS_TOKEN,
+    process.env.THREADS_ACCESS_TOKEN,
+    process.env.THREADS_APP_SECRET,
+    process.env.THREADS_WEBHOOK_VERIFY_TOKEN,
+    process.env.MCP_API_KEY,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+  ];
+  for (const secret of secretEnvVars) {
+    if (secret && secret.trim().length > 4) {
+      sanitized = sanitized.split(secret.trim()).join("[REDACTED_TOKEN]");
+    }
   }
   for (const pattern of TOKEN_PATTERNS) {
     sanitized = sanitized.replace(pattern, (match) => {

@@ -9,6 +9,7 @@ import { NexsaiMcpError } from "../utils/errors";
  * Phase 26 — Experimentation Engine (`nexsai_create_experiment` & `nexsai_analyze_experiment`).
  */
 export async function createNexsaiExperiment(params: {
+  platform?: "instagram" | "threads";
   name: string;
   variable: ExperimentRecord["variable"];
   hypothesis: string;
@@ -19,6 +20,7 @@ export async function createNexsaiExperiment(params: {
   variant_b_media_ids?: string[];
 }): Promise<ExperimentRecord> {
   return await saveExperiment({
+    platform: params.platform ?? "instagram",
     name: params.name,
     variable: params.variable,
     hypothesis: params.hypothesis,

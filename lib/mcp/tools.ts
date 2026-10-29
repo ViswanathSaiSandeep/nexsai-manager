@@ -14,6 +14,27 @@ import {
   replyToInstagramComment,
 } from "../instagram";
 import {
+  analyzeThreadsPerformance,
+  getThreadsAccountInsights,
+  getThreadsAccountStatus,
+  getThreadsConversation,
+  getThreadsMediaDetails,
+  getThreadsMediaInsights,
+  getThreadsMentions,
+  getThreadsProfile,
+  getThreadsReplies,
+  handleThreadsPendingReplies,
+  hasThreadsAccessToken,
+  listThreadsMedia,
+  manageThreadsReplyVisibility,
+  publishThreadsPost,
+  recommendThreadsContent,
+  replyToThreadsPost,
+  searchThreadsDiscussions,
+  THREADS_API_VERSION,
+} from "../threads";
+import { publishCrossPlatformContent } from "../platforms";
+import {
   analyzeSinglePostAgainstBenchmarks,
   runComprehensiveContentAnalysis,
 } from "../analytics/analysis";
@@ -53,11 +74,25 @@ import {
   nexsaiCompetitorAnalysisInputSchema,
   nexsaiCreateContentInputSchema,
   nexsaiCreateExperimentInputSchema,
+  nexsaiCrossPlatformPublishInputSchema,
   nexsaiFindOpportunitiesInputSchema,
   nexsaiPlanWeekInputSchema,
   nexsaiRecommendInputSchema,
   nexsaiResearchInputSchema,
   nexsaiStrategyInputSchema,
+  nexsaiThreadsAnalyzeInputSchema,
+  nexsaiThreadsRecommendInputSchema,
+  threadsAccountInsightsInputSchema,
+  threadsManageReplyInputSchema,
+  threadsMediaDetailsInputSchema,
+  threadsMediaInsightsInputSchema,
+  threadsMediaListInputSchema,
+  threadsMentionsInputSchema,
+  threadsPendingRepliesInputSchema,
+  threadsPublishInputSchema,
+  threadsReadRepliesInputSchema,
+  threadsReplyInputSchema,
+  threadsSearchInputSchema,
 } from "./validation";
 import { formatToolError } from "../utils/errors";
 import { logMcpOperation } from "../utils/logger";
@@ -76,13 +111,14 @@ export function registerNexsaiTools(server: McpServer): void {
     "nexsai_status",
     {
       description:
-        "[READ] Check the operational status, V2 intelligence engines, database memory adapter, and platform readiness of the NEXSAI Manager 2.0 AI Social Media Operating System.",
+        "[READ] Check the operational status, V3 intelligence engines, database memory adapter, and Instagram + Threads platform readiness of the NEXSAI Manager 3.0 AI Social Media Operating System.",
       inputSchema: z.object({}),
     },
     async () => {
       const hasInstagramToken = Boolean(
         process.env.INSTAGRAM_ACCESS_TOKEN?.trim()
       );
+      const hasThreadsToken = hasThreadsAccessToken();
       const dbInfo = getDatabaseStorageInfo();
       const state = await loadDatabaseState();
 
@@ -101,9 +137,9 @@ export function registerNexsaiTools(server: McpServer): void {
               {
                 status: "online",
                 message:
-                  "NEXSAI Manager 2.0 AI Social Media Operating System is online and ready.",
+                  "NEXSAI Manager 3.0 AI Social Media Operating System is online and ready (Instagram + Threads).",
                 server: "nexsai-manager",
-                version: "2.0.0",
+                version: "3.0.0",
                 platforms: {
                   instagram: {
                     enabled: true,
@@ -112,13 +148,22 @@ export function registerNexsaiTools(server: McpServer): void {
                     handle: state.brand.instagram_handle,
                   },
                   threads: {
-                    enabled: false,
-                    note: "SocialProvider abstraction ready; Threads disabled until requested.",
+                    enabled: true,
+                    token_configured: hasThreadsToken,
+                    api_version: THREADS_API_VERSION,
+                    handle:
+                      state.brand.threads_handle ?? state.brand.instagram_handle,
                   },
                 },
                 memory_and_database: {
                   adapter: dbInfo.adapter,
                   stored_media_count: state.media.length,
+                  stored_instagram_media_count: state.media.filter(
+                    (m) => m.platform === "instagram"
+                  ).length,
+                  stored_threads_media_count: state.media.filter(
+                    (m) => m.platform === "threads"
+                  ).length,
                   stored_snapshots_count: state.performance_snapshots.length,
                   stored_research_items: state.research_items.length,
                   content_plans_count: state.content_plans.length,
@@ -952,6 +997,512 @@ export function registerNexsaiTools(server: McpServer): void {
         };
       } catch (error) {
         return formatToolError(error, "nexsai_brand_config");
+      }
+    }
+  );
+
+  // ============================================================
+  // V3 — OFFICIAL META THREADS API TOOLS (TOOLS 27 - 43)
+  // ============================================================
+
+  // TOOL 27 — THREADS PROFILE [READ]
+  server.registerTool(
+    "threads_profile",
+    {
+      description:
+        "[READ] Retrieve the authenticated Threads account profile (`GET /v1.0/me` + `followers_count` insight), including Threads user ID, username, display name, biography, profile picture URL, verification status, and follower count. Requires `threads_basic`.",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        const profile = await getThreadsProfile("threads_profile");
+        await appendAuditLog({
+          tool: "threads_profile",
+          operation: "getThreadsProfile",
+          category: "READ",
+          success: true,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(profile, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_profile");
+      }
+    }
+  );
+
+  // TOOL 28 — THREADS ACCOUNT STATUS & CAPABILITY MATRIX [READ]
+  server.registerTool(
+    "threads_account_status",
+    {
+      description:
+        "[READ] Check whether Threads is connected, inspect the 24-hour publishing quota (`threads_publishing_limit`, 250 posts/day & 1,000 replies/day), and verify which official Meta Threads API v1.0 capabilities are Supported, Conditional, or Unavailable on the current token.",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        const status = await getThreadsAccountStatus("threads_account_status");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(status, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_account_status");
+      }
+    }
+  );
+
+  // TOOL 29 — THREADS MEDIA LIST [READ]
+  server.registerTool(
+    "threads_media",
+    {
+      description:
+        "[READ] Retrieve published Threads posts (`GET /v1.0/me/threads`) for the connected account, including post ID, media_type (`TEXT_POST`, `IMAGE`, `VIDEO`, `CAROUSEL_ALBUM`), text, permalink, media_url, topic_tag, link_attachment_url, timestamp, and safe pagination cursors. Requires `threads_basic`.",
+      inputSchema: threadsMediaListInputSchema,
+    },
+    async (args) => {
+      try {
+        const media = await listThreadsMedia(args, "threads_media");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(media, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_media");
+      }
+    }
+  );
+
+  // TOOL 30 — THREADS MEDIA DETAILS [READ]
+  server.registerTool(
+    "threads_media_details",
+    {
+      description:
+        "[READ] Retrieve detailed metadata and carousel children for a specific Threads post by its numeric `media_id` (`GET /v1.0/{media_id}`). Requires `threads_basic`.",
+      inputSchema: threadsMediaDetailsInputSchema,
+    },
+    async ({ media_id }) => {
+      try {
+        const details = await getThreadsMediaDetails(
+          media_id,
+          "threads_media_details"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(details, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_media_details");
+      }
+    }
+  );
+
+  // TOOL 31 — THREADS ACCOUNT INSIGHTS [READ]
+  server.registerTool(
+    "threads_account_insights",
+    {
+      description:
+        "[READ] Retrieve account-level Threads insights (`GET /v1.0/me/threads_insights`), including profile/post views, likes, replies, reposts, quotes, and followers_count. Requires `threads_manage_insights`.",
+      inputSchema: threadsAccountInsightsInputSchema,
+    },
+    async (args) => {
+      try {
+        const insights = await getThreadsAccountInsights(
+          args,
+          "threads_account_insights"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(insights, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_account_insights");
+      }
+    }
+  );
+
+  // TOOL 32 — THREADS MEDIA INSIGHTS [READ]
+  server.registerTool(
+    "threads_media_insights",
+    {
+      description:
+        "[READ] Retrieve official Threads post insights (`GET /v1.0/{media_id}/insights`) for a specific post, including views, likes, replies, reposts, quotes, shares, and total_interactions. Clearly notes unavailable metrics (such as unique reach or saves). Requires `threads_manage_insights`.",
+      inputSchema: threadsMediaInsightsInputSchema,
+    },
+    async (args) => {
+      try {
+        const insights = await getThreadsMediaInsights(
+          args,
+          "threads_media_insights"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(insights, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_media_insights");
+      }
+    }
+  );
+
+  // TOOL 33 — THREADS PUBLISH [WRITE — Confirmation Required]
+  server.registerTool(
+    "threads_publish",
+    {
+      description:
+        "[WRITE — Confirmation Required] Publish a new post (`TEXT`, `IMAGE`, `VIDEO`, or `CAROUSEL`) to the connected Threads account (`POST /v1.0/me/threads` -> `POST /v1.0/me/threads_publish`). Supports text up to 500 chars, HTTPS media URLs, link_attachment (TEXT only), topic_tag, alt_text, reply_control, quote_post_id, and reply_to_id. Checks persistent duplicate hashes. SAFETY RULE: Defaults to `confirm: false` (returns PUBLISH PREVIEW without publishing). Set `confirm: true` ONLY after explicit user approval. Requires `threads_content_publish`.",
+      inputSchema: threadsPublishInputSchema,
+    },
+    async (args) => {
+      try {
+        const { result, formattedPreview } = await publishThreadsPost(
+          args,
+          "threads_publish"
+        );
+        await appendAuditLog({
+          tool: "threads_publish",
+          operation: result.published
+            ? "threadsPublish:executed"
+            : "threadsPublish:preview",
+          category: "WRITE",
+          success: true,
+          summary: result.published
+            ? `Published Threads post media_id=${result.media_id}`
+            : "Generated Threads publish preview (confirm=false)",
+        });
+
+        if (!result.published && formattedPreview) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${formattedPreview}\n\n${JSON.stringify(result, null, 2)}`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_publish");
+      }
+    }
+  );
+
+  // TOOL 34 — THREADS READ REPLIES [READ]
+  server.registerTool(
+    "threads_read_replies",
+    {
+      description:
+        "[READ] Retrieve immediate replies to a specific Threads post or reply by `media_id` (`GET /v1.0/{media_id}/replies`), including reply ID, text, username, timestamp, hide_status, has_replies, and pagination cursors. Requires `threads_read_replies`.",
+      inputSchema: threadsReadRepliesInputSchema,
+    },
+    async (args) => {
+      try {
+        const replies = await getThreadsReplies(args, "threads_read_replies");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(replies, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_read_replies");
+      }
+    }
+  );
+
+  // TOOL 35 — THREADS CONVERSATION [READ]
+  server.registerTool(
+    "threads_conversation",
+    {
+      description:
+        "[READ] Retrieve the full flat conversation thread under a root Threads post by `media_id` (`GET /v1.0/{media_id}/conversation`). Requires `threads_read_replies`.",
+      inputSchema: threadsReadRepliesInputSchema,
+    },
+    async (args) => {
+      try {
+        const conv = await getThreadsConversation(args, "threads_conversation");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(conv, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_conversation");
+      }
+    }
+  );
+
+  // TOOL 36 — THREADS REPLY [WRITE — Confirmation Required]
+  server.registerTool(
+    "threads_reply",
+    {
+      description:
+        "[WRITE — Confirmation Required] Publish a reply (`reply_to_id`, max 500 chars) to a Threads post or reply. SAFETY RULE: Requires `confirm: true` to publish; when `confirm: false` (default), returns a preview without posting. Requires `threads_content_publish` and `threads_manage_replies`.",
+      inputSchema: threadsReplyInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await replyToThreadsPost(args, "threads_reply");
+        await appendAuditLog({
+          tool: "threads_reply",
+          operation: res.posted ? "threadsReply:posted" : "threadsReply:preview",
+          category: "WRITE",
+          success: true,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_reply");
+      }
+    }
+  );
+
+  // TOOL 37 — THREADS MANAGE REPLY VISIBILITY [DESTRUCTIVE / MODERATION — Confirmation Required]
+  server.registerTool(
+    "threads_manage_reply",
+    {
+      description:
+        "[DESTRUCTIVE — Confirmation Required] Hide (`hide: true`) or unhide (`hide: false`) a reply on a Threads post owned by the authenticated account (`POST /v1.0/{reply_id}/manage_reply`). Strictly requires `confirm: true` to execute; `confirm: false` returns a preview. Requires `threads_manage_replies`.",
+      inputSchema: threadsManageReplyInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await manageThreadsReplyVisibility(
+          args,
+          "threads_manage_reply"
+        );
+        await appendAuditLog({
+          tool: "threads_manage_reply",
+          operation: res.executed
+            ? `manageReply:${res.action}:executed`
+            : `manageReply:${res.action}:preview`,
+          category: "DESTRUCTIVE",
+          success: true,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_manage_reply");
+      }
+    }
+  );
+
+  // TOOL 38 — THREADS PENDING REPLIES [READ / WRITE — Conditional]
+  server.registerTool(
+    "threads_pending_replies",
+    {
+      description:
+        "[READ / WRITE — Conditional] List pending replies awaiting approval on a Threads post (`media_id`), or approve/ignore a pending reply (`reply_id` + `approve`, requires `confirm: true`). Conditional capability: Meta Threads API only supports pending_replies on posts published with reply approvals enabled (`enable_reply_approvals=true`).",
+      inputSchema: threadsPendingRepliesInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await handleThreadsPendingReplies(
+          args,
+          "threads_pending_replies"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_pending_replies");
+      }
+    }
+  );
+
+  // TOOL 39 — THREADS KEYWORD & TAG SEARCH [READ — Conditional]
+  server.registerTool(
+    "threads_search",
+    {
+      description:
+        "[READ — Conditional] Search Threads for AI, developer tools, and tech discussions by keyword or topic tag (`GET /v1.0/keyword_search`). Requires `threads_keyword_search` scope; if not yet granted on the token, transparently reports the Conditional permission status and searches the account's own Threads history + NEXSAI research engine.",
+      inputSchema: threadsSearchInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await searchThreadsDiscussions(args, "threads_search");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_search");
+      }
+    }
+  );
+
+  // TOOL 40 — THREADS MENTIONS [READ — Conditional]
+  server.registerTool(
+    "threads_mentions",
+    {
+      description:
+        "[READ — Conditional] Retrieve public Threads posts and replies mentioning the authenticated account (`GET /v1.0/me/mentions`). Requires the `threads_manage_mentions` permission in Meta App Dashboard.",
+      inputSchema: threadsMentionsInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await getThreadsMentions(args, "threads_mentions");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "threads_mentions");
+      }
+    }
+  );
+
+  // TOOL 41 — NEXSAI THREADS PERFORMANCE INTELLIGENCE [READ]
+  server.registerTool(
+    "nexsai_threads_analyze",
+    {
+      description:
+        "[READ] Full epistemic Threads performance intelligence (`OBSERVATION`, `CALCULATION`, `INFERENCE`, `RECOMMENDATION`): syncs recent Threads posts and insights, calculates engagement rates using `views` as the explicit denominator, analyzes format/pillar/hook patterns, and updates the NEXSAI learning loop.",
+      inputSchema: nexsaiThreadsAnalyzeInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await analyzeThreadsPerformance(
+          args,
+          "nexsai_threads_analyze"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "nexsai_threads_analyze");
+      }
+    }
+  );
+
+  // TOOL 42 — NEXSAI THREADS RECOMMENDATION ENGINE [READ]
+  server.registerTool(
+    "nexsai_threads_recommend",
+    {
+      description:
+        "[READ] Generate ranked, Threads-native content opportunities for @nexsaicommunity by combining live tech/AI research, historical Threads performance, brand pillars, and novelty checks. Adapts hooks, <=500-char text, topic tags, and discussion CTAs specifically for Threads.",
+      inputSchema: nexsaiThreadsRecommendInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await recommendThreadsContent(
+          args,
+          "nexsai_threads_recommend"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "nexsai_threads_recommend");
+      }
+    }
+  );
+
+  // TOOL 43 — CROSS-PLATFORM PUBLISH (INSTAGRAM + THREADS) [WRITE — Confirmation Required]
+  server.registerTool(
+    "nexsai_cross_platform_publish",
+    {
+      description:
+        "[WRITE — Confirmation Required] Unified cross-platform publishing workflow for Instagram and Threads. Validates each platform's constraints, adapts captions for Threads (<=500 chars + topic_tag), requires `confirm: true` (shows side-by-side preview when `confirm: false`), tracks each platform independently, avoids retrying an already-succeeded platform, and reports partial success accurately.",
+      inputSchema: nexsaiCrossPlatformPublishInputSchema,
+    },
+    async (args) => {
+      try {
+        const res = await publishCrossPlatformContent(
+          args,
+          "nexsai_cross_platform_publish"
+        );
+        await appendAuditLog({
+          tool: "nexsai_cross_platform_publish",
+          operation: `crossPlatformPublish:${res.status}`,
+          category: "WRITE",
+          success: res.status !== "failed",
+          summary: `Platforms=${args.platforms.join(",")} status=${res.status}`,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatToolError(error, "nexsai_cross_platform_publish");
       }
     }
   );

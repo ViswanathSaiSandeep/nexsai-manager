@@ -14,7 +14,7 @@ const mcpHandler = createMcpHandler(
   {
     serverInfo: {
       name: "nexsai-manager",
-      version: "2.0.0",
+      version: "3.0.0",
     },
   }
 );

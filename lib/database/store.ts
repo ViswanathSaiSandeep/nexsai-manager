@@ -13,12 +13,15 @@ import type {
   MediaRecord,
   NexsaiDatabaseState,
   PerformanceSnapshotRecord,
+  PublicationAttemptRecord,
   ResearchItemRecord,
+  WebhookEventRecord,
 } from "./schema";
 
 export const DEFAULT_BRAND_MEMORY: BrandMemoryConfig = {
   brand_name: "NEXSAI Community",
   instagram_handle: "@nexsaicommunity",
+  threads_handle: "@nexsaicommunity",
   positioning:
     "Technology + AI education + actionable tech intelligence — Where Tech Meets Tomorrow.",
   mission:
@@ -97,10 +100,10 @@ export const DEFAULT_BRAND_MEMORY: BrandMemoryConfig = {
   content_pillars: [
     {
       id: "ai_tools_productivity",
-      name: "AI Tools & Free Workflows",
+      name: "AI & Agentic Systems",
       description:
-        "Actionable guides on using Claude, ChatGPT, Gemini, Cursor, and open-source AI tools for real work.",
-      target_share_pct: 35,
+        "Actionable guides on AI agents, Claude, ChatGPT, Gemini, Cursor, and open-source AI workflows for real work.",
+      target_share_pct: 30,
       preferred_formats: ["CAROUSEL_ALBUM", "REELS"],
       primary_goal: "saves",
       example_topics: [
@@ -122,34 +125,34 @@ export const DEFAULT_BRAND_MEMORY: BrandMemoryConfig = {
       ],
     },
     {
-      id: "tech_explained",
-      name: "Tech & Hardware Explained",
+      id: "developer_workflows",
+      name: "Developer Tools",
       description:
-        "Clear, visual explanations of everyday and cutting-edge hardware/software concepts (e.g., 120Hz vs 60Hz, NPUs, quantization).",
+        "Practical tips on MCP servers, agentic coding, APIs, GitHub repos, and modern web/AI engineering.",
       target_share_pct: 25,
-      preferred_formats: ["IMAGE", "CAROUSEL_ALBUM"],
-      primary_goal: "reach",
+      preferred_formats: ["CAROUSEL_ALBUM"],
+      primary_goal: "saves",
       example_topics: [
-        "Why 120Hz feels so much smoother than 60Hz (and the battery trade-off)",
-        "How on-device AI chips (NPUs) work on smartphones",
-        "OLED vs Mini-LED vs MicroLED explained simply",
+        "What is MCP (Model Context Protocol) and why every dev is using it",
+        "Open-source GitHub repositories every AI builder should bookmark",
+        "Building agentic workflows with modern APIs",
       ],
       keywords: [
-        "120hz",
-        "60hz",
-        "display",
-        "explained",
-        "battery",
-        "refresh",
-        "chip",
-        "hardware",
-        "smartphone",
-        "how it works",
+        "developer",
+        "coding",
+        "code",
+        "api",
+        "mcp",
+        "github",
+        "open-source",
+        "sdk",
+        "agent",
+        "programming",
       ],
     },
     {
       id: "ai_news_breakthroughs",
-      name: "AI Model Releases & Tech News",
+      name: "Tech Signals",
       description:
         "Rapid, hype-free breakdowns of major releases from OpenAI, Anthropic, Google, Meta, Apple, Microsoft, and open-weight labs.",
       target_share_pct: 20,
@@ -175,44 +178,55 @@ export const DEFAULT_BRAND_MEMORY: BrandMemoryConfig = {
       ],
     },
     {
-      id: "developer_workflows",
-      name: "Developer Tools & Coding with AI",
+      id: "tech_explained",
+      name: "NEXSAI Community & Tech Explained",
       description:
-        "Practical tips on MCP servers, agentic coding, APIs, GitHub repos, and modern web/AI engineering.",
-      target_share_pct: 12,
-      preferred_formats: ["CAROUSEL_ALBUM"],
-      primary_goal: "saves",
+        "Clear, visual explanations of everyday and cutting-edge hardware/software concepts (e.g., 120Hz vs 60Hz, NPUs, quantization) and community spotlights.",
+      target_share_pct: 15,
+      preferred_formats: ["IMAGE", "CAROUSEL_ALBUM"],
+      primary_goal: "reach",
       example_topics: [
-        "What is MCP (Model Context Protocol) and why every dev is using it",
-        "Open-source GitHub repositories every AI builder should bookmark",
-        "Building agentic workflows with modern APIs",
+        "Why 120Hz feels so much smoother than 60Hz (and the battery trade-off)",
+        "How on-device AI chips (NPUs) work on smartphones",
+        "OLED vs Mini-LED vs MicroLED explained simply",
       ],
       keywords: [
-        "developer",
-        "coding",
-        "code",
-        "api",
-        "mcp",
-        "github",
-        "open-source",
-        "sdk",
-        "agent",
-        "programming",
+        "120hz",
+        "60hz",
+        "display",
+        "explained",
+        "battery",
+        "refresh",
+        "chip",
+        "hardware",
+        "smartphone",
+        "how it works",
       ],
     },
     {
       id: "gadgets_hardware",
-      name: "Future Gadgets & Smart Devices",
+      name: "Career Growth & Future Tech",
       description:
-        "Noteworthy hardware innovations, robotics, wearables, and next-gen compute devices.",
-      target_share_pct: 8,
+        "Student & developer career growth, engineering skills, and noteworthy hardware/compute innovations.",
+      target_share_pct: 10,
       preferred_formats: ["REELS", "IMAGE"],
       primary_goal: "engagement",
       example_topics: [
-        "Next-gen AI wearables and robotics demos",
-        "Smartphones and laptops pushing battery & silicon boundaries",
+        "Free tools & roadmaps for CS students and builders",
+        "Next-gen AI wearables and silicon boundaries",
       ],
-      keywords: ["gadget", "robot", "wearable", "device", "laptop", "silicon", "gpu"],
+      keywords: [
+        "gadget",
+        "robot",
+        "wearable",
+        "device",
+        "laptop",
+        "silicon",
+        "gpu",
+        "student",
+        "career",
+        "exam",
+      ],
     },
   ],
   updated_at: new Date().toISOString(),
@@ -638,20 +652,64 @@ export async function saveContentPlan(
 export async function updateContentPlanStatus(
   planId: string,
   status: ContentPlanRecord["status"],
-  updates: Partial<Pick<ContentPlanRecord, "published_media_id" | "scheduled_time" | "caption" | "image_url">> = {}
+  updates: Partial<
+    Pick<
+      ContentPlanRecord,
+      | "published_media_id"
+      | "published_permalink"
+      | "published_threads_id"
+      | "published_threads_permalink"
+      | "scheduled_time"
+      | "caption"
+      | "threads_text"
+      | "image_url"
+    >
+  > = {},
+  attempt?: PublicationAttemptRecord
 ): Promise<ContentPlanRecord | null> {
   const state = await loadDatabaseState();
   const idx = state.content_plans.findIndex((p) => p.id === planId);
   if (idx < 0) return null;
 
+  const existingAttempts = state.content_plans[idx].publication_attempts ?? [];
   state.content_plans[idx] = {
     ...state.content_plans[idx],
     ...updates,
     status,
+    publication_attempts: attempt
+      ? [attempt, ...existingAttempts].slice(0, 20)
+      : existingAttempts,
     updated_at: new Date().toISOString(),
   };
   await saveDatabaseState(state);
   return state.content_plans[idx];
+}
+
+export async function appendWebhookEvent(
+  event: Omit<WebhookEventRecord, "id" | "received_at"> & { id?: string }
+): Promise<{ recorded: boolean; duplicate: boolean; record: WebhookEventRecord }> {
+  const state = await loadDatabaseState();
+  if (!state.webhook_events) {
+    state.webhook_events = [];
+  }
+  const eventId =
+    event.id ??
+    `wh_${event.platform}_${event.event_type}_${event.object_id ?? Date.now()}`;
+  const existing = state.webhook_events.find((w) => w.id === eventId);
+  if (existing) {
+    return { recorded: false, duplicate: true, record: existing };
+  }
+  const record: WebhookEventRecord = {
+    ...event,
+    id: eventId,
+    received_at: new Date().toISOString(),
+  };
+  state.webhook_events.unshift(record);
+  if (state.webhook_events.length > 200) {
+    state.webhook_events = state.webhook_events.slice(0, 200);
+  }
+  await saveDatabaseState(state);
+  return { recorded: true, duplicate: false, record };
 }
 
 export async function saveExperiment(

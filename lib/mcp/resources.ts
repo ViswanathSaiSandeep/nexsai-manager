@@ -2,17 +2,21 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { loadDatabaseState } from "../database/store";
 import { generateCurrentStrategy } from "../strategy/planner";
 import { runComprehensiveContentAnalysis } from "../analytics/analysis";
+import { analyzeThreadsPerformance } from "../threads/insights";
+import { getAllPlatformCapabilities } from "../platforms";
 
 /**
- * Phase 10 — NEXSAI Manager 2.0 MCP Resources
+ * NEXSAI Manager 3.0 MCP Resources
  *
- * Exposes persistent brand knowledge, strategy, and analytics context via MCP resources:
+ * Exposes persistent brand knowledge, strategy, Instagram + Threads analytics, and platform capabilities via MCP resources:
  * - nexsai://brand/profile
  * - nexsai://brand/voice
  * - nexsai://brand/content-pillars
  * - nexsai://brand/rules
  * - nexsai://strategy/current
  * - nexsai://analytics/summary
+ * - nexsai://threads/summary
+ * - nexsai://platforms/capabilities
  */
 export function registerNexsaiResources(server: McpServer): void {
   server.registerResource(
@@ -205,6 +209,62 @@ export function registerNexsaiResources(server: McpServer): void {
             uri: uri.href,
             mimeType: "application/json",
             text: JSON.stringify(summary, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerResource(
+    "nexsai_threads_summary",
+    "nexsai://threads/summary",
+    {
+      title: "NEXSAI Threads Performance & Account Summary",
+      description:
+        "Latest Meta Threads v1.0 account status, top posts, and engagement breakdown for @nexsaicommunity.",
+      mimeType: "application/json",
+    },
+    async (uri) => {
+      const state = await loadDatabaseState();
+      const threadsSummary = await analyzeThreadsPerformance({ limit: 5 }).catch(
+        () => ({
+          cached_threads_accounts: state.accounts.filter(
+            (a) => a.platform === "threads"
+          ),
+          cached_threads_media_count: state.media.filter(
+            (m) => m.platform === "threads"
+          ).length,
+        })
+      );
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(threadsSummary, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerResource(
+    "nexsai_platforms_capabilities",
+    "nexsai://platforms/capabilities",
+    {
+      title: "NEXSAI Cross-Platform Provider Capabilities",
+      description:
+        "Supported, Conditional, and Unavailable capability matrix across Instagram, Threads, and planned platforms.",
+      mimeType: "application/json",
+    },
+    async (uri) => {
+      const caps = await getAllPlatformCapabilities();
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify({ platforms: caps }, null, 2),
           },
         ],
       };

@@ -321,6 +321,18 @@ export const nexsaiCreateContentInputSchema = z.object({
     .trim()
     .optional()
     .describe("Optional existing content plan ID to update."),
+  platform: z
+    .enum(["instagram", "threads", "both"])
+    .optional()
+    .default("instagram")
+    .describe(
+      "Target platform for this content plan ('instagram', 'threads', or 'both')."
+    ),
+  campaign: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional campaign name to group related posts across platforms."),
   topic: z
     .string()
     .trim()
@@ -332,10 +344,12 @@ export const nexsaiCreateContentInputSchema = z.object({
     .default("ai_tools_productivity")
     .describe("Target NEXSAI content pillar."),
   format: z
-    .enum(["IMAGE", "CAROUSEL_ALBUM", "REELS"])
+    .enum(["IMAGE", "CAROUSEL_ALBUM", "REELS", "TEXT", "VIDEO", "CAROUSEL"])
     .optional()
     .default("CAROUSEL_ALBUM")
-    .describe("Post format ('CAROUSEL_ALBUM', 'IMAGE', or 'REELS')."),
+    .describe(
+      "Post format ('CAROUSEL_ALBUM', 'IMAGE', 'REELS', 'TEXT', 'VIDEO', or 'CAROUSEL')."
+    ),
   goal: z
     .enum(["reach", "saves", "engagement", "followers", "education"])
     .optional()
@@ -355,7 +369,18 @@ export const nexsaiCreateContentInputSchema = z.object({
     .string()
     .max(2200)
     .optional()
-    .describe("Full draft caption (max 2,200 characters)."),
+    .describe("Full draft Instagram caption (max 2,200 characters)."),
+  threads_text: z
+    .string()
+    .max(500)
+    .optional()
+    .describe("Threads-native post text (max 500 characters)."),
+  threads_topic_tag: z
+    .string()
+    .trim()
+    .max(50)
+    .optional()
+    .describe("Optional Threads topic tag (1-50 chars, no periods or ampersands)."),
   cta: z.string().trim().optional().describe("Call-to-action line."),
   hashtags: z
     .array(z.string().trim())
@@ -397,6 +422,11 @@ export const nexsaiAnalyzePostInputSchema = z.object({
 });
 
 export const nexsaiCreateExperimentInputSchema = z.object({
+  platform: z
+    .enum(["instagram", "threads"])
+    .optional()
+    .default("instagram")
+    .describe("Social platform for this experiment ('instagram' or 'threads')."),
   name: z
     .string()
     .trim()
@@ -482,4 +512,388 @@ export const nexsaiBrandConfigInputSchema = z.object({
     .default(false)
     .describe("Required (confirm=true) when action='update' to persist brand memory changes."),
 });
+
+// ============================================================
+// V3 — THREADS API & CROSS-PLATFORM ZOD SCHEMAS
+// ============================================================
+
+export const threadsIdSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{5,30}$/, {
+    message:
+      "Must be a valid numeric Threads Graph ID (5 to 30 digits, e.g. '17869695210660667').",
+  });
+
+export const threadsMediaListInputSchema = z.object({
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe("Number of Threads posts to retrieve (1 to 50, defaults to 10)."),
+  after: paginationCursorSchema
+    .optional()
+    .describe("Pagination cursor (`after`) to fetch the next page of Threads posts."),
+  before: paginationCursorSchema
+    .optional()
+    .describe("Pagination cursor (`before`) to fetch the previous page of Threads posts."),
+  since: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Optional Unix timestamp (seconds) start filter."),
+  until: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Optional Unix timestamp (seconds) end filter."),
+});
+
+export const threadsMediaDetailsInputSchema = z.object({
+  media_id: threadsIdSchema.describe(
+    "Numeric Threads Media ID to inspect (e.g. '17869695210660667')."
+  ),
+});
+
+export const threadsPublishInputSchema = z.object({
+  media_type: z
+    .enum(["TEXT", "IMAGE", "VIDEO", "CAROUSEL"])
+    .optional()
+    .describe(
+      "Threads container format: 'TEXT', 'IMAGE', 'VIDEO', or 'CAROUSEL'. Automatically inferred if omitted."
+    ),
+  text: z
+    .string()
+    .max(500, "Threads post text cannot exceed 500 characters.")
+    .optional()
+    .describe(
+      "Post text content (up to 500 characters per official Meta Threads API limits)."
+    ),
+  image_url: z
+    .string()
+    .trim()
+    .url()
+    .refine((v) => v.startsWith("https://"), {
+      message: "image_url must use HTTPS (https://...).",
+    })
+    .optional()
+    .describe("Publicly accessible HTTPS image URL (required when media_type='IMAGE')."),
+  video_url: z
+    .string()
+    .trim()
+    .url()
+    .refine((v) => v.startsWith("https://"), {
+      message: "video_url must use HTTPS (https://...).",
+    })
+    .optional()
+    .describe("Publicly accessible HTTPS video URL (required when media_type='VIDEO')."),
+  carousel_items: z
+    .array(
+      z.object({
+        media_type: z.enum(["IMAGE", "VIDEO"]),
+        image_url: z.string().trim().url().optional(),
+        video_url: z.string().trim().url().optional(),
+        alt_text: z.string().trim().max(1000).optional(),
+      })
+    )
+    .min(2)
+    .max(20)
+    .optional()
+    .describe(
+      "2 to 20 IMAGE/VIDEO items when publishing a CAROUSEL Threads post."
+    ),
+  link_attachment: z
+    .string()
+    .trim()
+    .url()
+    .refine((v) => v.startsWith("https://"), {
+      message: "link_attachment must use HTTPS (https://...).",
+    })
+    .optional()
+    .describe(
+      "Optional HTTPS URL link attachment (officially supported on TEXT posts only)."
+    ),
+  topic_tag: z
+    .string()
+    .trim()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe(
+      "Optional Threads topic tag (1–50 characters, cannot contain periods '.' or ampersands '&')."
+    ),
+  alt_text: z
+    .string()
+    .trim()
+    .max(1000)
+    .optional()
+    .describe("Optional accessibility alt text for IMAGE or VIDEO posts."),
+  reply_control: z
+    .enum([
+      "everyone",
+      "accounts_you_follow",
+      "mentioned_only",
+      "parent_post_author_only",
+      "followers_only",
+    ])
+    .optional()
+    .describe("Optional reply permission setting for who can reply to this Threads post."),
+  reply_to_id: threadsIdSchema
+    .optional()
+    .describe("Optional Threads post/reply ID if publishing a reply."),
+  quote_post_id: threadsIdSchema
+    .optional()
+    .describe("Optional Threads post ID to quote."),
+  confirm: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Safety confirmation flag. Defaults to false (returns a PUBLISH PREVIEW without publishing). Set to true ONLY after explicit human confirmation."
+    ),
+  force_duplicate: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Set to true only if overriding a historical duplicate warning."),
+  plan_id: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional content plan ID from `nexsai_create_content` to update once published."),
+});
+
+export const threadsReadRepliesInputSchema = z.object({
+  media_id: threadsIdSchema.describe(
+    "Numeric Threads Media ID whose replies or conversation thread should be retrieved."
+  ),
+  reverse: z
+    .boolean()
+    .optional()
+    .describe("Optional sort order flag (`true` for chronological, `false` for reverse)."),
+  after: paginationCursorSchema.optional(),
+  before: paginationCursorSchema.optional(),
+});
+
+export const threadsReplyInputSchema = z.object({
+  reply_to_id: threadsIdSchema.describe(
+    "Numeric Threads Media ID or Reply ID to reply to."
+  ),
+  text: z
+    .string()
+    .trim()
+    .min(1, "Reply text cannot be empty.")
+    .max(500, "Threads reply text cannot exceed 500 characters.")
+    .describe("Text of the reply (max 500 characters)."),
+  confirm: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Safety confirmation flag. When false (default), returns a preview without posting. Set to true ONLY when confirmed by the user."
+    ),
+});
+
+export const threadsManageReplyInputSchema = z.object({
+  reply_id: threadsIdSchema.describe(
+    "Numeric Threads Reply ID to hide or unhide."
+  ),
+  hide: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe("Set to true (default) to hide the reply, or false to unhide it."),
+  confirm: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Safety confirmation flag. Must be true to execute the moderation change; false returns a preview."
+    ),
+});
+
+export const threadsPendingRepliesInputSchema = z.object({
+  media_id: threadsIdSchema
+    .optional()
+    .describe(
+      "Numeric Threads Media ID to list pending replies on (Conditional: requires reply approvals enabled on that post)."
+    ),
+  reply_id: threadsIdSchema
+    .optional()
+    .describe("Optional pending Threads Reply ID to approve or ignore."),
+  approve: z
+    .boolean()
+    .optional()
+    .describe("When reply_id is provided, set true to approve or false to ignore."),
+  confirm: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Required (confirm=true) when approving or ignoring a pending reply."),
+  after: paginationCursorSchema.optional(),
+  before: paginationCursorSchema.optional(),
+});
+
+export const threadsSearchInputSchema = z.object({
+  query: z
+    .string()
+    .trim()
+    .min(1)
+    .max(150)
+    .describe("Keyword or topic tag to search on Threads (e.g. 'Claude MCP', 'AI agents')."),
+  search_type: z
+    .enum(["TOP", "RECENT"])
+    .optional()
+    .default("TOP")
+    .describe("Sort order for keyword search results ('TOP' or 'RECENT')."),
+  search_mode: z
+    .enum(["KEYWORD", "TAG"])
+    .optional()
+    .default("KEYWORD")
+    .describe("Search mode ('KEYWORD' for full text or 'TAG' for topic tags)."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(25)
+    .optional()
+    .default(10)
+    .describe("Maximum results to return (1 to 25, default 10)."),
+  after: paginationCursorSchema.optional(),
+});
+
+export const threadsMentionsInputSchema = z.object({
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .default(10)
+    .describe("Maximum mentions to retrieve (1 to 50, default 10)."),
+  after: paginationCursorSchema.optional(),
+  before: paginationCursorSchema.optional(),
+});
+
+export const threadsMediaInsightsInputSchema = z.object({
+  media_id: threadsIdSchema.describe(
+    "Numeric Threads Media ID to retrieve performance insights for."
+  ),
+  metrics: z
+    .array(z.string().trim().min(1))
+    .optional()
+    .describe(
+      "Optional list of metrics. Defaults to ['views', 'likes', 'replies', 'reposts', 'quotes', 'shares']."
+    ),
+});
+
+export const threadsAccountInsightsInputSchema = z.object({
+  metrics: z
+    .array(z.string().trim().min(1))
+    .optional()
+    .describe(
+      "Optional list of account metrics. Defaults to ['views', 'likes', 'replies', 'reposts', 'quotes', 'followers_count']."
+    ),
+  since: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Optional Unix timestamp (seconds, >= 1712991600) for start of insights window."),
+  until: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Optional Unix timestamp (seconds) for end of insights window."),
+});
+
+export const nexsaiThreadsAnalyzeInputSchema = z.object({
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(25)
+    .optional()
+    .default(10)
+    .describe("Number of recent Threads posts to analyze with insights (1 to 25, default 10)."),
+});
+
+export const nexsaiThreadsRecommendInputSchema = z.object({
+  focus_topic: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional AI/tech topic focus for Threads-native recommendations."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .optional()
+    .default(5)
+    .describe("Number of ranked Threads content opportunities to return (1 to 10, default 5)."),
+});
+
+export const nexsaiCrossPlatformPublishInputSchema = z.object({
+  platforms: z
+    .array(z.enum(["instagram", "threads"]))
+    .min(1)
+    .describe("Target platforms to publish to (e.g. ['instagram', 'threads'])."),
+  image_url: z
+    .string()
+    .trim()
+    .url()
+    .refine((v) => v.startsWith("https://"), {
+      message: "image_url must use HTTPS (https://...).",
+    })
+    .optional()
+    .describe("Publicly accessible HTTPS image URL (required when 'instagram' is included)."),
+  instagram_caption: z
+    .string()
+    .max(2200)
+    .optional()
+    .describe("Instagram-optimized caption (up to 2,200 characters)."),
+  threads_text: z
+    .string()
+    .max(500)
+    .optional()
+    .describe(
+      "Threads-native post text (up to 500 characters). If omitted, automatically adapted from instagram_caption."
+    ),
+  threads_topic_tag: z
+    .string()
+    .trim()
+    .max(50)
+    .optional()
+    .describe("Optional Threads topic tag (1–50 chars, no periods or ampersands)."),
+  threads_link_attachment: z
+    .string()
+    .trim()
+    .url()
+    .optional()
+    .describe("Optional HTTPS link attachment for Threads TEXT posts."),
+  plan_id: z
+    .string()
+    .trim()
+    .optional()
+    .describe("Optional content plan ID from `nexsai_create_content` for idempotent tracking."),
+  confirm: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Safety confirmation flag. Defaults to false (returns a side-by-side multi-platform preview without publishing). Set to true ONLY after explicit human confirmation."
+    ),
+  force_duplicate: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Set to true only if overriding duplicate content detection."),
+});
+
 

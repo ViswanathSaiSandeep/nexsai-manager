@@ -11,6 +11,7 @@ import { redactSecrets } from "../utils/logger";
  */
 
 export type SocialPlatformName = "instagram" | "threads";
+export type FutureSocialPlatformName = SocialPlatformName | "x" | "telegram" | "youtube";
 
 export interface AccountRecord {
   id: string;
@@ -19,11 +20,13 @@ export interface AccountRecord {
   username: string;
   name?: string;
   account_type: string;
+  is_verified?: boolean;
   followers_count?: number;
   follows_count?: number;
   media_count?: number;
   biography?: string;
   website?: string;
+  profile_picture_url?: string;
   created_at: string;
   updated_at: string;
 }
@@ -37,6 +40,9 @@ export interface MediaRecord {
   caption: string;
   permalink: string;
   media_url?: string;
+  topic_tag?: string;
+  link_attachment_url?: string;
+  is_quote_post?: boolean;
   content_hash: string;
   published_at: string;
   created_at: string;
@@ -44,9 +50,13 @@ export interface MediaRecord {
 
 export interface PerformanceSnapshotRecord {
   id: string;
+  platform?: SocialPlatformName;
   media_id: string; // platform_media_id
   likes: number;
-  comments: number;
+  comments: number; // for Threads, mirrors replies count
+  replies?: number | null;
+  reposts?: number | null;
+  quotes?: number | null;
   shares: number | null;
   saves: number | null;
   views: number | null;
@@ -56,6 +66,7 @@ export interface PerformanceSnapshotRecord {
   comment_rate_pct: number | null;
   save_rate_pct: number | null;
   share_rate_pct: number | null;
+  repost_rate_pct?: number | null;
   engagement_rate_pct: number | null;
   captured_at: string;
 }
@@ -121,29 +132,59 @@ export type ContentPlanStatus =
   | "ANALYZING"
   | "ARCHIVED";
 
+export interface PublicationAttemptRecord {
+  timestamp: string;
+  platform: SocialPlatformName;
+  success: boolean;
+  media_id?: string;
+  creation_id?: string;
+  permalink?: string;
+  error_code?: string;
+  error_message?: string;
+  retryable?: boolean;
+}
+
 export interface ContentPlanRecord {
   id: string;
+  platform?: "instagram" | "threads" | "both";
+  campaign?: string;
   topic: string;
   content_pillar: ContentPillarId;
-  format: "IMAGE" | "CAROUSEL_ALBUM" | "REELS";
+  format: "IMAGE" | "CAROUSEL_ALBUM" | "REELS" | "TEXT" | "VIDEO" | "CAROUSEL";
   goal: "reach" | "saves" | "engagement" | "followers" | "education";
   scheduled_time?: string;
   status: ContentPlanStatus;
   hook: string;
   headline?: string;
   caption: string;
+  threads_text?: string;
+  threads_format?: "TEXT" | "IMAGE" | "VIDEO" | "CAROUSEL";
+  threads_topic_tag?: string;
+  threads_reply_control?:
+    | "everyone"
+    | "accounts_you_follow"
+    | "mentioned_only"
+    | "parent_post_author_only"
+    | "followers_only";
   cta: string;
   hashtags: string[];
   visual_brief: string;
   carousel_slides?: string[];
   image_url?: string;
+  video_url?: string;
+  link_attachment?: string;
   published_media_id?: string;
+  published_permalink?: string;
+  published_threads_id?: string;
+  published_threads_permalink?: string;
+  publication_attempts?: PublicationAttemptRecord[];
   created_at: string;
   updated_at: string;
 }
 
 export interface ExperimentRecord {
   id: string;
+  platform?: SocialPlatformName;
   name: string;
   variable:
     | "hook_style"
@@ -207,6 +248,7 @@ export interface BrandContentPillar {
 export interface BrandMemoryConfig {
   brand_name: string;
   instagram_handle: string;
+  threads_handle?: string;
   positioning: string;
   mission: string;
   target_audience: string[];
@@ -246,8 +288,18 @@ export interface AuditLogRecord {
   summary?: string;
 }
 
+export interface WebhookEventRecord {
+  id: string;
+  platform: SocialPlatformName;
+  event_type: string;
+  object_id?: string;
+  received_at: string;
+  verified_signature: boolean;
+  summary: string;
+}
+
 export interface NexsaiDatabaseState {
-  version: "2.0.0";
+  version: "2.0.0" | "3.0.0";
   brand: BrandMemoryConfig;
   accounts: AccountRecord[];
   media: MediaRecord[];
@@ -259,6 +311,7 @@ export interface NexsaiDatabaseState {
   learned_observations: LearnedObservationRecord[];
   competitors: CompetitorProfileRecord[];
   audit_logs: AuditLogRecord[];
+  webhook_events?: WebhookEventRecord[];
 }
 
 /**

@@ -14,6 +14,7 @@ export type ErrorCategory =
   | "Permission error"
   | "Invalid media URL"
   | "Instagram API error"
+  | "Threads API error"
   | "Rate limit error"
   | "Validation error"
   | "Unsupported operation"
@@ -31,6 +32,7 @@ const STANDARD_CODE_MAP: Record<ErrorCategory, string> = {
   "Rate limit error": "RATE_LIMIT_ERROR",
   API_ERROR: "API_ERROR",
   "Instagram API error": "API_ERROR",
+  "Threads API error": "API_ERROR",
   NOT_FOUND: "NOT_FOUND",
   DUPLICATE_CONTENT: "DUPLICATE_CONTENT",
   "Duplicate publish protection": "DUPLICATE_CONTENT",
@@ -90,12 +92,13 @@ interface MetaGraphErrorPayload {
 }
 
 /**
- * Classifies an error response from the Meta / Instagram Graph API into a safe, Claude-understandable NexsaiMcpError.
+ * Classifies an error response from the Meta Instagram or Threads Graph API into a safe, Claude-understandable NexsaiMcpError.
  */
 export function classifyMetaApiError(
   status: number,
   payload: unknown,
-  fallbackContext: string
+  fallbackContext: string,
+  platform: "Instagram" | "Threads" = "Instagram"
 ): NexsaiMcpError {
   const errObj =
     typeof payload === "object" && payload !== null && "error" in payload
@@ -106,12 +109,16 @@ export function classifyMetaApiError(
   const subcode = errObj?.error_subcode;
   const rawMessage = errObj?.message || `HTTP ${status} during ${fallbackContext}`;
   const safeMessage = redactSecrets(rawMessage);
+  const envVarName =
+    platform === "Threads" ? "THREADS_ACCESS_TOKEN" : "INSTAGRAM_ACCESS_TOKEN";
+  const apiErrorCategory: ErrorCategory =
+    platform === "Threads" ? "Threads API error" : "Instagram API error";
 
   // Authentication errors (e.g. code 190 = OAuthException invalid/expired token)
   if (status === 401 || code === 190 || code === 102) {
     return new NexsaiMcpError({
       category: "Authentication error",
-      message: `Instagram authentication failed: ${safeMessage}. Check that INSTAGRAM_ACCESS_TOKEN is valid and not expired.`,
+      message: `${platform} authentication failed: ${safeMessage}. Check that ${envVarName} is valid and not expired.`,
       statusCode: status,
       metaErrorCode: code,
       metaErrorSubcode: subcode,
@@ -122,7 +129,7 @@ export function classifyMetaApiError(
   if (status === 403 || code === 10 || (code !== undefined && code >= 200 && code < 300)) {
     return new NexsaiMcpError({
       category: "Permission error",
-      message: `Instagram permission denied: ${safeMessage}. Ensure your Meta App and access token have the required Instagram scopes configured.`,
+      message: `${platform} permission denied: ${safeMessage}. Ensure your Meta App and ${envVarName} have the required ${platform} scopes configured.`,
       statusCode: status,
       metaErrorCode: code,
       metaErrorSubcode: subcode,
@@ -133,7 +140,7 @@ export function classifyMetaApiError(
   if (status === 429 || code === 4 || code === 17 || code === 32 || code === 613) {
     return new NexsaiMcpError({
       category: "Rate limit error",
-      message: `Instagram API rate limit reached: ${safeMessage}. Please wait before retrying.`,
+      message: `${platform} API rate limit reached: ${safeMessage}. Please wait before retrying.`,
       statusCode: status,
       metaErrorCode: code,
       metaErrorSubcode: subcode,
@@ -143,25 +150,25 @@ export function classifyMetaApiError(
   // Invalid media URL during container creation (code 9004 or message mentioning media URL / image)
   if (
     code === 9004 ||
-    /media url|image_url|download|aspect ratio|format/i.test(safeMessage)
+    /media url|image_url|video_url|download|aspect ratio|format/i.test(safeMessage)
   ) {
     return new NexsaiMcpError({
       category: "Invalid media URL",
-      message: `Instagram rejected the media URL: ${safeMessage}`,
+      message: `${platform} rejected the media URL: ${safeMessage}`,
       statusCode: status,
       metaErrorCode: code,
       metaErrorSubcode: subcode,
     });
   }
 
-  // Unsupported operation or deprecated metric (code 100 often indicates unsupported field/metric or non-existent node)
+  // Unsupported operation or deprecated metric (code 100 often indicates unsupported field/metric or reply approvals disabled)
   if (
     code === 100 &&
-    /metric|unsupported|deprecated|not supported|cannot be loaded/i.test(safeMessage)
+    /metric|unsupported|deprecated|not supported|cannot be loaded|reply approvals/i.test(safeMessage)
   ) {
     return new NexsaiMcpError({
       category: "Unsupported operation",
-      message: `Instagram API reported an unsupported parameter, metric, or node: ${safeMessage}`,
+      message: `${platform} API reported an unsupported parameter, metric, or condition: ${safeMessage}`,
       statusCode: status,
       metaErrorCode: code,
       metaErrorSubcode: subcode,
@@ -169,8 +176,8 @@ export function classifyMetaApiError(
   }
 
   return new NexsaiMcpError({
-    category: "Instagram API error",
-    message: `Instagram API error during ${fallbackContext}: ${safeMessage}`,
+    category: apiErrorCategory,
+    message: `${platform} API error during ${fallbackContext}: ${safeMessage}`,
     statusCode: status,
     metaErrorCode: code,
     metaErrorSubcode: subcode,
